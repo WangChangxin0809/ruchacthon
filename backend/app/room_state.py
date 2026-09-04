@@ -147,7 +147,14 @@ class RoomState:
             await self._emit("agent_status", agent)
             if conflict:
                 self._touch_agent(actor_id, owner_id, worktree_id, "needs_input", f"editing {path}")
-                esc = await self._raise_escalation(
+                # One unresolved conflict per path is enough to block the gate;
+                # a second agent piling onto the same claim (a retry, or the
+                # demo script re-run without a human ever deciding the first
+                # one) should not spawn a look-alike card next to it.
+                existing_esc = next(
+                    (e for e in self._escalations.values()
+                     if e["status"] == "pending" and e["path"] == path), None)
+                esc = existing_esc or await self._raise_escalation(
                     path=path, worktree_id=worktree_id, owner_id=owner_id, actor_id=actor_id,
                     description=f"{owner_id}'s agent {actor_id} wants {path}, "
                                 f"already claimed by {existing.owner_id}'s agent {existing.actor_id}.",

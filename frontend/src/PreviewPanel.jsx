@@ -19,7 +19,7 @@ export default function PreviewPanel({ previews }) {
           <div key={p.id} className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden">
             <button
               onClick={() => setOpenId(open ? null : p.id)}
-              className="w-full text-left px-3 py-2 flex items-center justify-between hover:bg-gray-850"
+              className="w-full text-left px-3 py-2 flex items-center justify-between hover:bg-gray-800"
             >
               <div>
                 <div className="text-sm text-gray-100">{p.title}</div>

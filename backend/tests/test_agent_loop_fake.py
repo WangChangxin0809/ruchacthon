@@ -78,7 +78,14 @@ async def main() -> None:
     conflict_result = next(e for e in log2.events if e["type"] == "tool_call")["result"]
     assert conflict_result["conflict"] is True
     assert "escalation_id" in conflict_result
-    assert room.list_escalations(), "conflict should have produced a pending escalation"
+    assert len(room.list_escalations()) == 1, "conflict should have produced a pending escalation"
+
+    # A third agent piling onto the same still-undecided conflict must reuse
+    # the existing escalation, not spawn a look-alike card next to it -- this
+    # regressed once already (a repeated demo run showed duplicate cards).
+    third = await room.claim("shared.py", "agent-third", "third-owner", "wt-third", "team")
+    assert third["escalation_id"] == conflict_result["escalation_id"]
+    assert len(room.list_escalations()) == 1, "a repeat conflict on the same path must not duplicate the card"
 
     print("all agent_loop assertions passed:")
     print(f"  turn 1: {scripted.calls} model calls, "

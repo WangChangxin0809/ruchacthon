@@ -69,8 +69,11 @@ class SubagentManager:
             )
             sub.events = log.events
             sub.status = "done"
+            # "in_review", not "ready_to_merge": a subagent finishing its own
+            # task is not the same as a human having looked at it -- that
+            # judgment is exactly what this track asks not to skip.
             await self.room.set_agent_status(sub.identity.actor_id, sub.identity.owner_id,
-                                              sub.identity.worktree_id, "ready_to_merge", sub.task)
+                                              sub.identity.worktree_id, "in_review", sub.task)
         except Exception as exc:  # a subagent's own failure must not crash the server
             sub.error = f"{type(exc).__name__}: {exc}"
             sub.status = "failed"

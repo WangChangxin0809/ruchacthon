@@ -37,7 +37,7 @@ class MainChat:
         async def spawn_subagent(args: dict) -> dict:
             actor_id = self.subagents.spawn(
                 owner_id=self.identity.owner_id,
-                worktree_id=args.get("worktree_id", f"wt-{args.get('name', 'sub')}"),
+                worktree_id=args.get("worktree_id") or "wt-sub",
                 task=args["task"],
             )
             return {"ok": True, "actor_id": actor_id}
