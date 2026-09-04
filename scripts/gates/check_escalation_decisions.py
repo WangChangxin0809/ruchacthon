@@ -10,9 +10,9 @@ Each such id must have a matching record in backend/data/decisions.jsonl
 before this gate passes -- machine coordination stops at the team boundary,
 a person picks up from there.
 
-    0 = every team-scope conflict has a decision (or none exist)
+    0 = every team-scope conflict has a decision (or none exist, or the
+        backend has never run -- there is nothing to gate on either way)
     1 = judged failure: at least one conflict is still undecided
-    2 = could not judge (no data directory yet -- nothing has run)
 
 Run standalone: python3 scripts/gates/check_escalation_decisions.py --root <repo>
 """
@@ -46,11 +46,11 @@ def main():
     log_path = os.path.join(args.root, "backend", "data", "room_log.jsonl")
     decisions_path = os.path.join(args.root, "backend", "data", "decisions.jsonl")
 
-    log = _read_jsonl(log_path)
-    if log is None:
-        print("check_escalation_decisions: no room_log.jsonl yet -- "
-              "nothing to judge (run the backend and let agents claim files first)")
-        return 2
+    log = _read_jsonl(log_path) or []
+    if not log:
+        print("check_escalation_decisions: no room_log.jsonl yet, nothing to gate on "
+              "(run the backend and let agents claim files first)")
+        return 0
 
     escalation_ids = set()
     for entry in log:

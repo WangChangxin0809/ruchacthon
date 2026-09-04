@@ -78,7 +78,43 @@ def make_repo(tmp):
 
 # Each case: gate script, the defect to plant, and a fragment the failure output
 # must contain. The fragment is what stops a pass-for-the-wrong-reason.
+def plant_decided_escalation(t):
+    write(t, "backend/data/room_log.jsonl",
+          json.dumps({
+              "id": 0, "type": "claim", "scope": "team",
+              "path": "app.py", "actor_id": "agent-b",
+              "owner_id": "lisi", "worktree_id": "wt-lisi",
+              "note": "CONFLICT escalated: esc-1",
+              "ts": "2026-01-01T00:00:00Z",
+          }) + "\n")
+    write(t, "backend/data/decisions.jsonl",
+          json.dumps({
+              "escalation_id": "esc-1", "decision": "approve",
+              "reason": "lisi goes first", "actor": "human",
+              "decided_at": "2026-01-01T00:05:00Z",
+          }) + "\n")
+
+
 CASES = [
+    dict(
+        gate="check_escalation_decisions.py",
+        why="a team-scope claim conflict with no matching human decision",
+        needle="Blocked",
+        plant=lambda t: write(t, "backend/data/room_log.jsonl",
+                              json.dumps({
+                                  "id": 0, "type": "claim", "scope": "team",
+                                  "path": "app.py", "actor_id": "agent-b",
+                                  "owner_id": "lisi", "worktree_id": "wt-lisi",
+                                  "note": "CONFLICT escalated: esc-1",
+                                  "ts": "2026-01-01T00:00:00Z",
+                              }) + "\n"),
+    ),
+    dict(
+        gate="check_escalation_decisions.py",
+        why="the same conflict, but with an approved human decision on file",
+        needle=None,
+        plant=plant_decided_escalation,
+    ),
     dict(
         gate="check_no_machine_paths.py",
         why="a committed file carrying somebody's home directory",
