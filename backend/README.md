@@ -35,3 +35,30 @@ in-memory object -- correct by construction, not by polling.
 `backend/data/room_log.jsonl` and `backend/data/decisions.jsonl`: any
 `scope=team` claim conflict without a matching decision fails the gate.
 That is the "no merge without a human" enforcement point.
+
+## Chat, subagents, previews
+
+`app/llm.py` + `app/agent_loop.py` + `app/chat.py` + `app/subagents.py` add a
+real chat agent that can edit files itself or delegate to background
+subagents, all sharing the same `RoomState` and AgentRoom tools as any
+external MCP client. None of it needs a model key to boot -- `/api/chat`
+and `/api/subagents` fail with a clear `NotConfiguredError` message until
+one is set, everything else on the dashboard keeps working. Set:
+
+```bash
+export LLM_PROVIDER=openai        # or anthropic; openai covers DeepSeek/GPT (OpenAI-wire-compatible)
+export LLM_API_KEY=...
+export LLM_MODEL=deepseek-chat    # optional, provider has a default
+export LLM_BASE_URL=https://api.deepseek.com   # optional, provider has a default for openai
+```
+
+`backend/tests/test_agent_loop_fake.py` proves the loop's tool-calling
+mechanics against a scripted fake model, with no key needed -- run it after
+touching `agent_loop.py`, `chat.py`, or `subagents.py`. See
+[docs/decisions/0002-llm-client-abstraction.md](../docs/decisions/0002-llm-client-abstraction.md)
+for why this is a small hand-written loop rather than an adopted framework.
+
+Agents can also call `submit_preview(title, summary, html)` to show a human
+what they made -- it lands on the dashboard's preview panel, sandboxed
+(the `<iframe sandbox="">` allows no scripts) since the HTML comes from a
+model.

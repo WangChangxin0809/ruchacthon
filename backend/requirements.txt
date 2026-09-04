@@ -4,3 +4,5 @@ pycrdt
 mcp
 websockets
 python-multipart
+anthropic
+openai

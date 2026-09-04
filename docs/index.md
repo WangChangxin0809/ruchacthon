@@ -54,4 +54,5 @@ rather than waiting for CI, because that is how often the cost is paid.
 |---|---|---|
 | Understand the system | [ARCHITECTURE.md](../ARCHITECTURE.md) | — |
 | Know why the repo is shaped this way | [0001](decisions/0001-agent-conventions.md) | — |
+| Know why the chat/subagent LLM layer looks the way it does | [0002](decisions/0002-llm-client-abstraction.md) | — |
 | See what is in flight | [tech debt](exec-plans/tech-debt-tracker.md) | — |

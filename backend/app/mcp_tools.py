@@ -55,3 +55,12 @@ async def room_edit_text(path: str, index: int, insert: str = "", delete: int = 
     and return its current contents -- this is the actual real-time merge
     the AgentRoom paper measures, not a claim-only simulation."""
     return room.edit_text(path, index, insert, delete)
+
+
+@mcp.tool()
+async def submit_preview(actor_id: str, owner_id: str, title: str, summary: str,
+                          html: str = "") -> dict:
+    """Show a human what you made: a short summary and, optionally, a
+    self-contained HTML snippet (a diff, a rendered page, a chart) that
+    shows up on the dashboard's preview panel."""
+    return await room.submit_preview(actor_id, owner_id, title, summary, html)

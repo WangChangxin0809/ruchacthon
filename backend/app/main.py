@@ -11,8 +11,15 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from .chat import MainChat
+from .llm import LLMClient, NotConfiguredError
 from .mcp_tools import mcp
 from .room_state import room
+from .subagents import SubagentManager
+
+llm = LLMClient()
+subagents = SubagentManager(room, llm)
+main_chat = MainChat(room, llm, subagents)
 
 
 @contextlib.asynccontextmanager
@@ -61,7 +68,47 @@ async def decide(escalation_id: str, body: Decision):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True}
+    return {"ok": True, "llm_configured": llm.is_configured()}
+
+
+class ChatMessage(BaseModel):
+    message: str
+
+
+@app.post("/api/chat")
+async def chat(body: ChatMessage):
+    try:
+        events = await main_chat.send(body.message)
+    except NotConfiguredError as exc:
+        return {"ok": False, "error": str(exc)}
+    return {"ok": True, "events": events}
+
+
+@app.get("/api/chat/history")
+def chat_history():
+    return main_chat.history
+
+
+class SpawnSubagent(BaseModel):
+    owner_id: str = "human"
+    worktree_id: str = "wt-sub"
+    task: str
+
+
+@app.post("/api/subagents")
+async def spawn_subagent(body: SpawnSubagent):
+    actor_id = subagents.spawn(body.owner_id, body.worktree_id, body.task)
+    return {"ok": True, "actor_id": actor_id}
+
+
+@app.get("/api/subagents")
+def list_subagents():
+    return subagents.list()
+
+
+@app.get("/api/previews")
+def list_previews():
+    return room.list_previews()
 
 
 @app.websocket("/ws")
