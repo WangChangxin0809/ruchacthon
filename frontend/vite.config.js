@@ -14,6 +14,12 @@ export default defineConfig({
   base: appBase,
   plugins: [react()],
   server: {
+    // Vite 5's DNS-rebinding guard rejects any request whose Host header
+    // isn't localhost/127.0.0.1/a configured name -- which is exactly what
+    // the platform's reverse-proxy tunnel sends (its own public hostname).
+    // Confirmed by hand: `curl -H "Host: okcheese.com" ...` returned
+    // "Blocked request. This host is not allowed." before this line existed.
+    allowedHosts: true,
     proxy: {
       [`${appBase.replace(/\/$/, '')}/api`]: {
         target: 'http://127.0.0.1:8787',
