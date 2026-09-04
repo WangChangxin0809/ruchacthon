@@ -1,0 +1,7 @@
+
+# Personal permission grants. Committed, they apply to everyone who clones.
+.claude/settings.local.json
+
+# Python leaves these behind the moment a hook or a gate runs.
+__pycache__/
+*.pyc
