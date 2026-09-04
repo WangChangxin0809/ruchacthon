@@ -1,0 +1,3 @@
+# Questions are not bugs, and a question filed as a bug wastes both sides' time.
+# Point them somewhere before the form, not after.
+blank_issues_enabled: true
