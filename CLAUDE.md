@@ -14,7 +14,7 @@ escalated to a human and gated on their decision, on purpose, per
 
 ## Hard rules
 
-1. A `team`-scope claim conflict must never be auto-resolved -> [ARCHITECTURE.md](ARCHITECTURE.md)
+1. A `team`-scope claim conflict must escalate to a pending human decision and stay blocked until one is recorded -> [ARCHITECTURE.md](ARCHITECTURE.md)
 
 ## Commands
 
