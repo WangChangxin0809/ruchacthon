@@ -27,6 +27,44 @@ export async function decide(escalationId, decision, reason, actor) {
   return r.json();
 }
 
+export async function fetchHealth() {
+  const r = await fetch(`${API_BASE}/api/health`);
+  return r.json();
+}
+
+export async function fetchChatHistory() {
+  const r = await fetch(`${API_BASE}/api/chat/history`);
+  return r.json();
+}
+
+export async function sendChatMessage(message) {
+  const r = await fetch(`${API_BASE}/api/chat`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ message }),
+  });
+  return r.json();
+}
+
+export async function fetchSubagents() {
+  const r = await fetch(`${API_BASE}/api/subagents`);
+  return r.json();
+}
+
+export async function spawnSubagent(ownerId, worktreeId, task) {
+  const r = await fetch(`${API_BASE}/api/subagents`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ owner_id: ownerId, worktree_id: worktreeId, task }),
+  });
+  return r.json();
+}
+
+export async function fetchPreviews() {
+  const r = await fetch(`${API_BASE}/api/previews`);
+  return r.json();
+}
+
 export function connectWebSocket(onMessage) {
   let ws;
   let closedByUs = false;

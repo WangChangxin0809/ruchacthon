@@ -51,6 +51,7 @@ class RoomState:
         self._claims: dict[str, Claim] = {}
         self._agents: dict[str, dict] = {}
         self._escalations: dict[str, dict] = {}
+        self._previews: list[dict] = []
         self._log: list[dict] = []
         self._subscribers: set[asyncio.Queue] = set()
         self._lock = asyncio.Lock()
@@ -84,6 +85,15 @@ class RoomState:
             await q.put(msg)
 
     # ---- agent status bookkeeping ----
+
+    async def set_agent_status(self, actor_id: str, owner_id: str, worktree_id: str,
+                                status: str, current_task: str = "") -> dict:
+        """Public entry point for callers outside claim/release/broadcast --
+        the chat and subagent loops report status this way instead of
+        reaching into the claim-flow-only `_touch_agent`."""
+        agent = self._touch_agent(actor_id, owner_id, worktree_id, status, current_task)
+        await self._emit("agent_status", agent)
+        return agent
 
     def _touch_agent(self, actor_id: str, owner_id: str, worktree_id: str,
                       status: str, current_task: str = "") -> dict:
@@ -137,7 +147,14 @@ class RoomState:
             await self._emit("agent_status", agent)
             if conflict:
                 self._touch_agent(actor_id, owner_id, worktree_id, "needs_input", f"editing {path}")
-                esc = await self._raise_escalation(
+                # One unresolved conflict per path is enough to block the gate;
+                # a second agent piling onto the same claim (a retry, or the
+                # demo script re-run without a human ever deciding the first
+                # one) should not spawn a look-alike card next to it.
+                existing_esc = next(
+                    (e for e in self._escalations.values()
+                     if e["status"] == "pending" and e["path"] == path), None)
+                esc = existing_esc or await self._raise_escalation(
                     path=path, worktree_id=worktree_id, owner_id=owner_id, actor_id=actor_id,
                     description=f"{owner_id}'s agent {actor_id} wants {path}, "
                                 f"already claimed by {existing.owner_id}'s agent {existing.actor_id}.",
@@ -198,6 +215,26 @@ class RoomState:
 
     def read_text(self, path: str) -> str:
         return str(self._get_doc(path)["content"])
+
+    # ---- previews: an agent showing a human what it made, AO-style ----
+
+    async def submit_preview(self, actor_id: str, owner_id: str, title: str,
+                              summary: str, html: str = "") -> dict:
+        preview = {
+            "id": uuid.uuid4().hex[:8],
+            "actor_id": actor_id,
+            "owner_id": owner_id,
+            "title": title,
+            "summary": summary,
+            "html": html,
+            "created_at": _now(),
+        }
+        self._previews.append(preview)
+        await self._emit("preview", preview)
+        return {"ok": True, "id": preview["id"]}
+
+    def list_previews(self) -> list[dict]:
+        return list(self._previews)
 
     # ---- escalation + decisions ----
 

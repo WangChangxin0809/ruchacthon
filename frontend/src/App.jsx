@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
-import { fetchAgents, fetchEscalations, decide, connectWebSocket } from "./api";
+import { fetchAgents, fetchEscalations, fetchPreviews, decide, connectWebSocket } from "./api";
+import ChatPanel from "./ChatPanel";
+import PreviewPanel from "./PreviewPanel";
 
 const STATUS_COLUMNS = [
   { key: "working", label: "工作中" },
@@ -84,12 +86,14 @@ function EscalationCard({ esc, onDecide }) {
 export default function App() {
   const [agents, setAgents] = useState([]);
   const [escalations, setEscalations] = useState([]);
+  const [previews, setPreviews] = useState([]);
   const [connected, setConnected] = useState(false);
 
   async function refresh() {
-    const [a, e] = await Promise.all([fetchAgents(), fetchEscalations()]);
+    const [a, e, p] = await Promise.all([fetchAgents(), fetchEscalations(), fetchPreviews()]);
     setAgents(a);
     setEscalations(e);
+    setPreviews(p);
   }
 
   useEffect(() => {
@@ -108,6 +112,8 @@ export default function App() {
         setEscalations((prev) => [...prev, msg.data]);
       } else if (msg.type === "decision") {
         setEscalations((prev) => prev.filter((e) => e.id !== msg.data.escalation_id));
+      } else if (msg.type === "preview") {
+        setPreviews((prev) => [...prev, msg.data]);
       }
     });
     return close;
@@ -118,10 +124,10 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-[#0f1115] text-gray-100 p-6">
-      <header className="flex items-center justify-between mb-6">
+    <div className="h-screen bg-[#0f1115] text-gray-100 p-6 flex flex-col overflow-hidden">
+      <header className="flex items-center justify-between mb-4 shrink-0">
         <div>
-          <h1 className="text-xl font-semibold">AgentRoom 看板</h1>
+          <h1 className="text-xl font-semibold">AgentRoom</h1>
           <p className="text-sm text-gray-400">Multi-Agent 协作中的人工参与与治理 · 赛道三 Demo</p>
         </div>
         <span className={`text-xs px-2 py-1 rounded border ${connected ? "border-emerald-700 text-emerald-300" : "border-gray-700 text-gray-500"}`}>
@@ -129,33 +135,44 @@ export default function App() {
         </span>
       </header>
 
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
-        <section className="lg:col-span-3">
-          <h2 className="text-sm font-medium text-gray-400 mb-3">Agent 状态</h2>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            {STATUS_COLUMNS.map((col) => (
-              <div key={col.key}>
-                <div className="text-xs text-gray-500 mb-2">{col.label}</div>
-                {agents.filter((a) => a.status === col.key).map((a) => (
-                  <AgentCard key={a.agent_id} agent={a} />
-                ))}
-              </div>
-            ))}
-          </div>
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-5 gap-6 min-h-0">
+        <section className="lg:col-span-3 min-h-0">
+          <ChatPanel />
         </section>
 
-        <section className="lg:col-span-2">
-          <h2 className="text-sm font-medium text-gray-400 mb-3">
-            待人工裁决队列 {escalations.length > 0 && <span className="text-rose-400">({escalations.length})</span>}
-          </h2>
-          {escalations.length === 0 && (
-            <div className="text-sm text-gray-600 border border-dashed border-gray-800 rounded-lg p-6 text-center">
-              暂无待裁决事项
+        <section className="lg:col-span-2 overflow-y-auto pr-1 space-y-6">
+          <div>
+            <h2 className="text-sm font-medium text-gray-400 mb-3">Agent 状态</h2>
+            <div className="grid grid-cols-2 gap-3">
+              {STATUS_COLUMNS.map((col) => (
+                <div key={col.key}>
+                  <div className="text-xs text-gray-500 mb-2">{col.label}</div>
+                  {agents.filter((a) => a.status === col.key).map((a) => (
+                    <AgentCard key={a.agent_id} agent={a} />
+                  ))}
+                </div>
+              ))}
             </div>
-          )}
-          {escalations.map((esc) => (
-            <EscalationCard key={esc.id} esc={esc} onDecide={removeEscalation} />
-          ))}
+          </div>
+
+          <div>
+            <h2 className="text-sm font-medium text-gray-400 mb-3">
+              待人工裁决队列 {escalations.length > 0 && <span className="text-rose-400">({escalations.length})</span>}
+            </h2>
+            {escalations.length === 0 && (
+              <div className="text-sm text-gray-600 border border-dashed border-gray-800 rounded-lg p-6 text-center">
+                暂无待裁决事项
+              </div>
+            )}
+            {escalations.map((esc) => (
+              <EscalationCard key={esc.id} esc={esc} onDecide={removeEscalation} />
+            ))}
+          </div>
+
+          <div>
+            <h2 className="text-sm font-medium text-gray-400 mb-3">成果预览</h2>
+            <PreviewPanel previews={previews} />
+          </div>
         </section>
       </div>
     </div>
