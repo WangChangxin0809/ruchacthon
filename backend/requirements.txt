@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+pycrdt
+mcp
+websockets
+python-multipart

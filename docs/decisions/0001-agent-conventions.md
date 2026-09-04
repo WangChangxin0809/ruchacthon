@@ -1,6 +1,6 @@
 # 0001 — This repository carries its own harness
 
-Date: <YYYY-MM-DD>
+Date: 2026-09-04
 Status: accepted
 
 ## Context
@@ -39,14 +39,21 @@ Consequences that follow, and are load-bearing:
 
 ## Rejected
 
-- **A longer `CLAUDE.md`.** <Why: the cost is per-turn and unbounded, and the
-  content had no reading trigger.>
-- **<the other real alternative you considered>.** <Why not.>
-
-Record the alternatives honestly. A decision that lists only the winner reads as
-inevitable, and the next person re-proposes what was already rejected.
+- **A longer `CLAUDE.md`.** Why not: the cost is per-turn and unbounded, and
+  the content had no reading trigger — a rule buried in paragraph 40 is read
+  exactly as often as one that was never written.
+- **A single MCP process per agent instead of one shared server.** This is
+  the AgentRoom-specific version of the same argument: a per-agent MCP
+  process cannot see another agent's claims without its own IPC layer, which
+  is a second harness alongside this one. Mounting the MCP app inside the
+  same FastAPI process as the dashboard (see `backend/app/main.py`) means
+  `RoomState` is the *only* place coordination state lives, enforced by
+  Python's own object identity rather than a protocol we would have to keep
+  in sync by hand.
 
 ## Revisit when
 
-<What would have to become true. Without this, the record becomes folklore of a
-different kind — permanent instead of forgotten.>
+Real multi-tenant usage shows up (see `SECURITY.md`'s open item on
+`/api/escalations/{id}/decide` having no auth), or the CRDT worktree-scope
+merge needs to survive a backend restart (currently in-memory only, reset on
+process restart by design — see `backend/app/room_state.py::RoomState.__init__`).

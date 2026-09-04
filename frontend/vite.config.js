@@ -1,0 +1,30 @@
+import react from '@vitejs/plugin-react'
+import { defineConfig } from 'vite'
+
+// The cheese platform's preview tunnel reverse-proxies this app under
+// $CHEESE_APP_BASE (e.g. /api/topics/<id>/app/) instead of "/" -- reading it
+// here means `npm run dev` alone is correct both under that tunnel and at
+// plain localhost (where it's unset, so `base` stays "/").
+const appBase = process.env.CHEESE_APP_BASE || '/'
+
+// Proxied so the browser only ever talks to this one origin -- the tunnel
+// exposes exactly one port, and a bare `http://localhost:8787` from the
+// frontend would resolve to the *viewer's* machine, not this sandbox.
+export default defineConfig({
+  base: appBase,
+  plugins: [react()],
+  server: {
+    proxy: {
+      [`${appBase.replace(/\/$/, '')}/api`]: {
+        target: 'http://127.0.0.1:8787',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(appBase.replace(/\/$/, ''), ''),
+      },
+      [`${appBase.replace(/\/$/, '')}/ws`]: {
+        target: 'ws://127.0.0.1:8787',
+        ws: true,
+        rewrite: (path) => path.replace(appBase.replace(/\/$/, ''), ''),
+      },
+    },
+  },
+})

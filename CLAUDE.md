@@ -1,6 +1,10 @@
-# <project>
+# AgentRoom
 
-<One paragraph: what this is, and the one thing that is surprising about it.>
+MCP coordination layer for concurrent Claude Code agents editing one repo.
+The surprising part: it does not try to auto-resolve every conflict —
+`team`-scope collisions (different teammates' agents) are deliberately
+escalated to a human and gated on their decision, on purpose, per
+[ARCHITECTURE.md](ARCHITECTURE.md).
 
 - **Covers**: rules that apply everywhere and cannot be enforced by a script.
 - **Does not cover**: anything true of one directory only (that directory's own
@@ -10,7 +14,7 @@
 
 ## Hard rules
 
-1. <rule> -> <docs/path.md>
+1. A `team`-scope claim conflict must never be auto-resolved -> [ARCHITECTURE.md](ARCHITECTURE.md)
 
 ## Commands
 

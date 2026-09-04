@@ -8,8 +8,8 @@ because readers assume they know what it says.
 
 What cannot be adopted by reference is who answers, and how fast:
 
-- **Report to:** <an address a real person reads, and who that person is>
-- **You will hear back within:** <a number of working days you can actually meet>
+- **Report to:** the repository owner, via a GitHub issue on this repo or a DM to `@WangChangxin0809`
+- **You will hear back within:** 3 working days during the hackathon window; best-effort after
 
 A reporting address nobody monitors is the failure mode here, and it is
 invisible from the inside — the only person who finds out is someone who

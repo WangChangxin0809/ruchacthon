@@ -65,6 +65,7 @@ run fast "nobody's home directory"   python3 scripts/gates/check_no_machine_path
 
 # --- unit: minutes -----------------------------------------------------------
 run unit "layering"                  python3 scripts/gates/check_layering.py
+run unit "AgentRoom escalations decided" python3 scripts/gates/check_escalation_decisions.py
 # run unit "tests"                   <your test command>
 
 # --- full --------------------------------------------------------------------
