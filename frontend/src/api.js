@@ -1,5 +1,12 @@
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:8787";
-const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:8787/ws";
+// Same-origin by default (proxied by Vite's dev server, see vite.config.js)
+// so this works both from `localhost` and from behind the cheese preview
+// tunnel's subpath. Set VITE_API_BASE/VITE_WS_URL to point at a different
+// backend entirely.
+const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+const API_BASE = import.meta.env.VITE_API_BASE || base;
+const WS_URL =
+  import.meta.env.VITE_WS_URL ||
+  `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.host}${base}/ws`;
 
 export async function fetchAgents() {
   const r = await fetch(`${API_BASE}/api/agents`);
