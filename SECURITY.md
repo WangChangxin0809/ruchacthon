@@ -9,14 +9,17 @@
 
 ## Reporting
 
-<Where to send it, and what response time to expect.>
+Open a GitHub issue on this repo, or DM `@WangChangxin0809`. Best-effort
+response during the hackathon window; no SLA beyond that yet.
 
 ## Threat model
 
-The model itself belongs in a decision record, because it is a choice with
-alternatives and it will be revisited. Link it here once written:
-
-- `docs/decisions/00NN-threat-model.md`
+Not yet written as its own decision record — this is a 2.5-day hackathon
+build, not a deployed multi-tenant service. The one thing worth stating now:
+the dashboard's `/api/escalations/{id}/decide` endpoint has no auth, because
+this MVP assumes a single trusted team on a single sandbox. That is the
+first thing to fix before this runs anywhere with real access control at
+stake.
 
 ## What is enforced, and where
 

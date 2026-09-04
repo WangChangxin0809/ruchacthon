@@ -15,6 +15,11 @@ python3 -m uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8787
 - Dashboard WebSocket: `ws://localhost:8787/ws`
 - MCP endpoint (point a Claude Code `--mcp-config` at this): `http://localhost:8787/mcp`
 
+If `pip` itself is missing and `apt install python3-pip` fails (no route to
+Debian's mirrors, common in locked-down sandboxes): `pypi.org` is usually
+still reachable, so `curl -sS -o get-pip.py https://bootstrap.pypa.io/get-pip.py
+&& python3 get-pip.py --user --break-system-packages` bootstraps it directly.
+
 ## Why one process
 
 The AgentRoom paper's premise is that concurrent agents see each other's
