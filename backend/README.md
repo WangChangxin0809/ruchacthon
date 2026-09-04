@@ -58,6 +58,13 @@ touching `agent_loop.py`, `chat.py`, or `subagents.py`. See
 [docs/decisions/0002-llm-client-abstraction.md](../docs/decisions/0002-llm-client-abstraction.md)
 for why this is a small hand-written loop rather than an adopted framework.
 
+`backend/tests/test_api.py` drives the FastAPI app directly with Starlette's
+`TestClient` (no server process) and covers the REST surface: status codes,
+the missing-key error shape, and the claim -> escalate -> decide -> gate
+round trip. Both test files run in CI (`.github/workflows/ci.yml`'s
+`backend-tests` job, which installs `requirements.txt` first -- the bare
+`harness` job intentionally has no project dependencies, see its comments).
+
 Agents can also call `submit_preview(title, summary, html)` to show a human
 what they made -- it lands on the dashboard's preview panel, sandboxed
 (the `<iframe sandbox="">` allows no scripts) since the HTML comes from a

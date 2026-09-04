@@ -6,3 +6,4 @@ websockets
 python-multipart
 anthropic
 openai
+httpx
