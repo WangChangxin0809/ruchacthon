@@ -7,17 +7,21 @@ runaway-cost bug waiting to happen, not a feature this demo needs).
 from __future__ import annotations
 
 from .agent_loop import AgentIdentity, room_tools, run_turn
+from .fs_tools import fs_tools
 from .llm import LLMClient, ToolSpec
 from .room_state import RoomState
 from .subagents import SubagentManager
 
 SYSTEM_PROMPT = (
-    "You are the lead agent a human is talking to directly. You can edit "
-    "files yourself (room_claim/room_release/room_broadcast/room_state) or "
-    "delegate a self-contained task to a background subagent with "
-    "spawn_subagent -- prefer delegating when a task can run independently, "
-    "so the human isn't blocked waiting on you. Call submit_preview when you "
-    "finish something worth showing, not for routine updates."
+    "You are the lead agent a human is talking to directly, working in a "
+    "real checkout of this project (read_file/write_file/list_dir are real "
+    "filesystem I/O, scoped to the project root). Before writing a file, "
+    "call room_claim on its exact path first -- write_file refuses "
+    "otherwise, this is enforced, not a suggestion. You can also delegate a "
+    "self-contained task to a background subagent with spawn_subagent -- "
+    "prefer delegating when a task can run independently, so the human "
+    "isn't blocked waiting on you. Call submit_preview when you finish "
+    "something worth showing, not for routine updates."
 )
 
 
@@ -33,6 +37,8 @@ class MainChat:
 
     def _tools(self) -> tuple[list[ToolSpec], dict]:
         specs, fns = room_tools(self.room, self.identity)
+        fs_specs, fs_fns = fs_tools(self.room, self.identity)
+        specs, fns = specs + fs_specs, {**fns, **fs_fns}
 
         async def spawn_subagent(args: dict) -> dict:
             actor_id = self.subagents.spawn(

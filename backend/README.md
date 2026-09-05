@@ -52,6 +52,28 @@ export LLM_MODEL=deepseek-chat    # optional, provider has a default
 export LLM_BASE_URL=https://api.deepseek.com   # optional, provider has a default for openai
 ```
 
+If you already export `ANTHROPIC_API_KEY` (for `LLM_PROVIDER=anthropic`) or
+`DEEPSEEK_API_KEY`/`OPENAI_API_KEY` (for `LLM_PROVIDER=openai`) for some
+other tool, `LLM_API_KEY` is optional -- `llm.py` falls back to those
+standard names so the same key doesn't need exporting twice. **Deliberately
+not supported:** reading Claude Code's own OAuth/subscription session out
+of the OS keychain. That credential is scoped to the Claude Code app
+itself; pulling it out to drive a separate app's API calls is a different
+use of it, not a config convenience, and it isn't portable across
+platforms either. Use a real API key.
+
+The chat agent and subagents can also read and write real files
+(`app/fs_tools.py`: `read_file`/`write_file`/`list_dir`, scoped to the
+project root -- a path that tries to leave it, absolute or via `..`, is
+refused before touching disk). `write_file` additionally refuses unless
+the caller currently holds a `room_claim` on that exact path: the claim
+is the actual permission check, not a status display next to one.
+`backend/tests/test_fs_tools.py` covers both the claim gate and the path
+escape (including the case where an actor claims a string that happens to
+look like an absolute path -- room_claim doesn't validate path shape, so
+the safety has to live in `fs_tools`, not be inherited from the claim
+check).
+
 `backend/tests/test_agent_loop_fake.py` proves the loop's tool-calling
 mechanics against a scripted fake model, with no key needed -- run it after
 touching `agent_loop.py`, `chat.py`, or `subagents.py`. See

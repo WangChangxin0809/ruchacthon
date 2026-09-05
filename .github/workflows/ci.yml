@@ -116,6 +116,9 @@ jobs:
       - name: REST API surface
         run: python3 backend/tests/test_api.py
 
+      - name: fs_tools claim-gating and path-safety
+        run: python3 backend/tests/test_fs_tools.py
+
   frontend-build:
     runs-on: ubuntu-latest
     timeout-minutes: 10

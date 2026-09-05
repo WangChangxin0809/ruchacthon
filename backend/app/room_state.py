@@ -167,6 +167,13 @@ class RoomState:
                                 f"{actor_id} claimed {path} (team scope, no prior owner)")
             return {"ok": True, "conflict": False, "path": path}
 
+    def has_claim(self, path: str, actor_id: str) -> bool:
+        """Whether `actor_id` currently holds the claim on `path` -- the
+        permission check `fs_tools.write_file` gates on, not just a status
+        display."""
+        claim = self._claims.get(path)
+        return claim is not None and claim.actor_id == actor_id
+
     async def release(self, path: str, actor_id: str) -> dict:
         async with self._lock:
             claim = self._claims.get(path)

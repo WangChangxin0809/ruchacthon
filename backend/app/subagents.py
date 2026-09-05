@@ -14,17 +14,21 @@ import uuid
 from dataclasses import dataclass, field
 
 from .agent_loop import AgentIdentity, room_tools, run_turn
+from .fs_tools import fs_tools
 from .llm import LLMClient
 from .room_state import RoomState
 
 SYSTEM_PROMPT = (
-    "You are a coding agent working in a shared repository alongside other "
-    "agents. Before editing a file, call room_claim with the right scope: "
-    "'worktree' if you share a live buffer with another agent, 'person' if "
-    "another of your own agents might touch it, 'team' if a teammate's agent "
-    "might. If room_claim reports a conflict, do not just barrel through: "
-    "call room_broadcast to say what you're doing and why it's safe (or stop "
-    "if it isn't), and expect a human to decide team-scope conflicts, not you. "
+    "You are a coding agent working in a real checkout of this repository "
+    "alongside other agents (read_file/write_file/list_dir are real "
+    "filesystem I/O, scoped to the project root). Before editing a file, "
+    "call room_claim with the right scope: 'worktree' if you share a live "
+    "buffer with another agent, 'person' if another of your own agents "
+    "might touch it, 'team' if a teammate's agent might. write_file refuses "
+    "until you hold the claim -- this is enforced, not a suggestion. If "
+    "room_claim reports a conflict, do not just barrel through: call "
+    "room_broadcast to say what you're doing and why it's safe (or stop if "
+    "it isn't), and expect a human to decide team-scope conflicts, not you. "
     "Call room_release when you're done with a file."
 )
 
@@ -59,6 +63,8 @@ class SubagentManager:
         await self.room.set_agent_status(sub.identity.actor_id, sub.identity.owner_id,
                                           sub.identity.worktree_id, "working", sub.task)
         tools, fns = room_tools(self.room, sub.identity)
+        fs_specs, fs_fns = fs_tools(self.room, sub.identity)
+        tools, fns = tools + fs_specs, {**fns, **fs_fns}
         try:
             log = await run_turn(
                 self.llm,
