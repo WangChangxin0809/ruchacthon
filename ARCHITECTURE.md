@@ -7,44 +7,83 @@
 
 ## What it does
 
-AgentRoom gives concurrent Claude Code agents a shared coordination layer,
-exposed as five MCP tools (`room_claim`, `room_release`, `room_broadcast`,
-`room_read`, `room_state`; see arXiv 2608.23740). A claim is tagged with a
-`scope`: `worktree` (agents literally co-editing the same buffer -- resolved
-by a real pycrdt CRDT merge, never escalated), `person` (one human's several
-agents -- tracked, rarely escalated), or `team` (different teammates' agents
--- escalated to a human by default, because that is a staffing decision, not
-a text-merge problem).
+CC Workbench is a local, multi-agent development workbench whose only
+execution engine is Claude Code. A human talks to a **main agent** in a
+session; the main agent (or the human directly) spawns **workers**, each a
+separate `claude` process in its own git worktree. Workers hand back
+**artifacts** (Markdown, images, HTML, files, diffs, managed dev servers); the
+human reviews them and feedback flows back into the worker's own session.
+Workers see each other through the **Room** (claims with leases, overlap
+notices, broadcasts, handoffs), and a same-workspace claim conflict is never
+auto-resolved: it becomes a pending human decision that the blocked worker
+waits on. Everything is persisted in one SQLite file with an ordered event
+log, so a browser reconnects with `since=<seq>` and a server restart tells the
+truth about which runs died.
 
-A `team`-scope conflict is written to `backend/data/room_log.jsonl` and
-surfaced on the dashboard. `scripts/gates/check_escalation_decisions.py`
-reads that log plus `backend/data/decisions.jsonl` and fails the build until
-every conflict has a matching human decision -- the enforcement point for
-"remove the human and the workflow stops working."
+Ideas borrowed, code not copied (docs/decisions/0003): Agent Orchestrator
+(orchestrator-plus-workers, board from run facts), DeepSeek Harness (task
+board with write-scope overlap warnings), AgentRoom arXiv 2608.23740 (claims,
+escalation to a human at the team boundary), CC Switch (provider profiles as
+per-run config, never rewriting the user's global CC config).
+
+## Domain model
+
+| Entity | Meaning | Key fields |
+|---|---|---|
+| Project | a directory the user works in | `root_path`, `is_git` |
+| Workspace | where a Run may write: `main` (the project dir), `worktree` (own branch), `dir` (copy; no merge) | `path`, `branch`, `base_ref`, `edit_mode` |
+| Task | a unit of work with its own review and merge state | `review_status`, `merge_status`, `depends_on` |
+| Session | one continuous conversation (main, or one per worker task) | `cc_session_id` |
+| Run | one execution attempt inside a session | `status`, `outcome`, `attempt_no`, `profile_snapshot`, `pid` |
+| Artifact | something a run hands to a human, versioned per task | `kind`, `version`, `status` |
+| Room: Claim / RoomMessage / Decision | who owns which path; overlap/broadcast/handoff; the human's ruling | `expires_at`, `blocked_run_id` |
+| ProviderProfile | which endpoint a run talks to | `kind`, `credential_env` (a name, never a value) |
+
+Task status on the board is **derived**, never stored: latest run status
+(`queued/running/needs_input/failed/cancelled/interrupted/exhausted`), then
+`review_status`, then `merge_status`. A process exiting cleanly puts the task
+in `in_review`; only a human moves it past that.
 
 ## Codemap
 
-| Directory | Holds | Talks to |
+| Path | Holds | Talks to |
 |---|---|---|
-| `backend/app/` | FastAPI dashboard API + WebSocket, MCP tools, `RoomState` (claims, CRDT docs, escalations) | frontend (REST/WS), any MCP client (`/mcp/`) |
-| `frontend/` | React dashboard: agent status board, escalation queue | `backend/app` |
-| `scripts/gates/check_escalation_decisions.py` | the merge gate | `backend/data/*.jsonl` |
-| `scripts/demo/` | scripted two-agent conflict for a live demo | the running backend, via a real MCP client |
-| `demo/target-app/` | toy file the demo agents race to edit | — |
+| `backend/app/cc_runner.py` | the only model-calling code: one `claude` subprocess per Run via the Agent SDK; stream, interrupt, mid-turn sends | `runs.py` |
+| `backend/app/runs.py` | RunManager: scheduling, concurrency, dependencies, cancel, deliver, restart reconciliation, and the run-bound tool servers (`workbench` for main, `room` for workers) | everything below |
+| `backend/app/room.py` | claims, leases, overlap vs conflict, handoff, decisions | `runs.deliver` |
+| `backend/app/artifacts.py`, `devservers.py` | artifact versions + feedback; managed dev-server processes | `workspaces` |
+| `backend/app/workspaces.py` | worktree / dir workspaces, diff, merge | git |
+| `backend/app/providers.py`, `ccconfig.py` | Provider Profiles + compat check; CC install/config discovery | `cc_runner` (env) |
+| `backend/app/shared_edit.py` | EXPERIMENTAL CRDT merge for `Write` in shared-edit workspaces | `runs.py` hooks |
+| `backend/app/db.py`, `events.py`, `main.py` | SQLite schema; seq'd event bus; FastAPI + WebSocket | frontend |
+| `frontend/src/` | React workbench: sidebar, session view, board/preview/diff, Room bar, settings | `/api`, `/ws` |
+| `scripts/gates/check_escalation_decisions.py` | the merge gate: no pending decisions | `workbench.db` |
 
 ## Invariants
 
-1. A `team`-scope claim conflict is never silently auto-resolved — enforced in `backend/app/room_state.py::RoomState.claim`.
-2. No merge proceeds while a logged conflict lacks an approved decision — enforced by `scripts/gates/check_escalation_decisions.py`, wired into `ci.sh`.
-3. The MCP tool surface and the dashboard read/write the same in-process `RoomState` — enforced by mounting the MCP app inside the same FastAPI process (`backend/app/main.py`), not a second process reading the same files.
+1. A same-workspace claim conflict is never auto-resolved — `Room._conflict`
+   creates a pending Decision and the claim is refused until a human decides;
+   `check_escalation_decisions.py` blocks `ci.sh` while one is pending.
+2. Every model call goes through `cc_runner.CCRun` bound to a Run row with a
+   real `cwd`, session, task and profile snapshot — there is no other client.
+3. A run's status changes only through `RunManager._set_status`, which writes
+   the row and emits `run_status` together; after a restart every run whose
+   process is gone is `interrupted`, never left `running`.
+4. Tool identity is a closure over the Run (`_room_tools(run)`), so a model
+   cannot claim, hand off or submit as anybody else.
+5. Secrets never leave the server process: profiles store env-var *names*,
+   snapshots list keys only, error strings pass through `providers.scrub`.
+6. The event log's `seq` is monotonic and every persisted event is replayable
+   from any point; stream deltas are the only unpersisted events.
 
-## Constraints that are not visible in the code
+## What is not enforced by code
 
-- This was built inside a sandboxed cheese topic whose Bash tool has no usable
-  Anthropic credentials by design, so `scripts/demo/run_two_agents.py` drives
-  the real MCP server with a scripted client rather than two live `claude -p`
-  processes. The `.mcp.json` at the repo root is real and auto-discovered by
-  any normally-authenticated Claude Code session — the constraint is this
-  sandbox, not the design.
-- `apt` cannot reach Debian's mirrors from this sandbox; `pip` and `node` were
-  bootstrapped from `pypi.org` / `nodejs.org` directly (see `backend/README.md`).
+- **Docker** (`docker-compose.yml`) is kept from the previous architecture and
+  is unverified: the engine is the host's Claude Code login, so the container
+  would need `claude` installed and the user's `~/.claude` mounted.
+- **Shared-edit mode** protects `Write` through hooks only; a shell command
+  writing the same file in the merge window wins. It is labelled experimental
+  in the UI for that reason (see `shared_edit.py`'s docstring).
+- **Windows**: the design avoids tmux/pty (SDK spawns `claude` directly;
+  `psutil` for process checks; `git worktree` for isolation) but has not yet
+  been run on a Windows machine.

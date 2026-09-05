@@ -1,23 +1,20 @@
-# AgentRoom dashboard (frontend)
+# CC Workbench frontend
 
-React + Vite + Tailwind. Shows live agent status and the pending human
-escalation queue, backed by `../backend`'s REST + WebSocket API.
-
-## Run
+React + Vite + Tailwind. Left: projects and tasks. Centre: the selected
+session (main agent or a worker) with streaming output and tool calls.
+Right: board / preview / diff, resizable and maximisable. Bottom: the Room,
+collapsed by default.
 
 ```bash
-npm install    # first time only
-npm run dev -- --host 0.0.0.0 --port 5173
+npm install
+npm run dev -- --host 127.0.0.1 --port 5173
 ```
 
-Defaults to `http://localhost:8787` / `ws://localhost:8787/ws` for the
-backend (see `src/api.js`). Override with `VITE_API_BASE` / `VITE_WS_URL`
-env vars (see `.env.example`) if the backend runs elsewhere.
+`/api` and `/ws` are proxied to `127.0.0.1:8787` (see `vite.config.js`;
+`BACKEND_HOST` overrides the host). Deep links: `?p=<project id>&s=<session id>`.
 
-## Note on the bundler
+The WebSocket client keeps the last event `seq` and reconnects with it, so a
+dropped connection replays what was missed and never duplicates a message.
 
-`npm create vite@latest` currently scaffolds onto Vite 8's new rolldown
-bundler, which shipped without a working `linux-x64-gnu` native binding in
-this sandbox (`Cannot find native binding`, a known npm optional-dependency
-bug). `package.json` is pinned to classic Vite 5 + `@vitejs/plugin-react` 4
-instead -- swap back once rolldown-vite is stable in your environment.
+`package.json` pins Vite 5 (rolldown-vite's native binding was broken in the
+original sandbox); swap when convenient.

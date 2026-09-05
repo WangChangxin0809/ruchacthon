@@ -78,42 +78,32 @@ def make_repo(tmp):
 
 # Each case: gate script, the defect to plant, and a fragment the failure output
 # must contain. The fragment is what stops a pass-for-the-wrong-reason.
-def plant_decided_escalation(t):
-    write(t, "backend/data/room_log.jsonl",
-          json.dumps({
-              "id": 0, "type": "claim", "scope": "team",
-              "path": "app.py", "actor_id": "agent-b",
-              "owner_id": "lisi", "worktree_id": "wt-lisi",
-              "note": "CONFLICT escalated: esc-1",
-              "ts": "2026-01-01T00:00:00Z",
-          }) + "\n")
-    write(t, "backend/data/decisions.jsonl",
-          json.dumps({
-              "escalation_id": "esc-1", "decision": "approve",
-              "reason": "lisi goes first", "actor": "human",
-              "decided_at": "2026-01-01T00:05:00Z",
-          }) + "\n")
+def _plant_decision(t, status):
+    import sqlite3
+    path = os.path.join(t, "backend", "data", "workbench.db")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE decisions (id TEXT PRIMARY KEY, project_id TEXT, subject_kind TEXT, subject TEXT, "
+                 "status TEXT, decision TEXT, reason TEXT, actor TEXT, decided_at TEXT, blocked_run_id TEXT, created_at TEXT)")
+    conn.execute("INSERT INTO decisions VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                 ("dec-1", "prj-1", "claim_conflict", json.dumps({"path": "app.py"}), status,
+                  "approve" if status == "decided" else None, "", "human", None, "run-1", "2026-01-01T00:00:00Z"))
+    conn.commit()
+    conn.close()
 
 
 CASES = [
     dict(
         gate="check_escalation_decisions.py",
-        why="a team-scope claim conflict with no matching human decision",
+        why="a claim conflict with no human decision yet",
         needle="Blocked",
-        plant=lambda t: write(t, "backend/data/room_log.jsonl",
-                              json.dumps({
-                                  "id": 0, "type": "claim", "scope": "team",
-                                  "path": "app.py", "actor_id": "agent-b",
-                                  "owner_id": "lisi", "worktree_id": "wt-lisi",
-                                  "note": "CONFLICT escalated: esc-1",
-                                  "ts": "2026-01-01T00:00:00Z",
-                              }) + "\n"),
+        plant=lambda t: _plant_decision(t, "pending"),
     ),
     dict(
         gate="check_escalation_decisions.py",
-        why="the same conflict, but with an approved human decision on file",
+        why="the same conflict, decided by a human",
         needle=None,
-        plant=plant_decided_escalation,
+        plant=lambda t: _plant_decision(t, "decided"),
     ),
     dict(
         gate="check_no_machine_paths.py",

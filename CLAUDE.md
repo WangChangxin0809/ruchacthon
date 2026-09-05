@@ -1,10 +1,10 @@
-# AgentRoom
+# CC Workbench
 
-MCP coordination layer for concurrent Claude Code agents editing one repo.
-The surprising part: it does not try to auto-resolve every conflict —
-`team`-scope collisions (different teammates' agents) are deliberately
-escalated to a human and gated on their decision, on purpose, per
-[ARCHITECTURE.md](ARCHITECTURE.md).
+Local multi-agent workbench whose only engine is Claude Code: a main agent
+plus background workers in git worktrees, artifacts with feedback, and a Room
+for coordination. The surprising part: a same-workspace claim conflict is
+deliberately escalated to a human and the worker stays blocked on that
+decision, on purpose, per [ARCHITECTURE.md](ARCHITECTURE.md).
 
 - **Covers**: rules that apply everywhere and cannot be enforced by a script.
 - **Does not cover**: anything true of one directory only (that directory's own
@@ -14,7 +14,9 @@ escalated to a human and gated on their decision, on purpose, per
 
 ## Hard rules
 
-1. A `team`-scope claim conflict must escalate to a pending human decision and stay blocked until one is recorded -> [ARCHITECTURE.md](ARCHITECTURE.md)
+1. A same-workspace claim conflict must escalate to a pending human decision and stay blocked until one is recorded -> [ARCHITECTURE.md](ARCHITECTURE.md)
+2. Every model call goes through `backend/app/cc_runner.py`; no second model client, no second scheduler -> [docs/decisions/0003](docs/decisions/0003-claude-code-only-harness.md)
+3. Secrets are referenced by environment-variable name only; never in a response, log, event, or DB row -> [ARCHITECTURE.md](ARCHITECTURE.md) invariant 5
 
 ## Commands
 

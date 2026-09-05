@@ -105,19 +105,12 @@ jobs:
       - name: install backend deps
         run: python3 -m pip install -r backend/requirements.txt
 
-      # No LLM_API_KEY is set here on purpose: this proves the tool-calling
-      # mechanics and the REST surface against a scripted fake model and a
-      # missing-key error path, which is exactly what this environment can
-      # test -- see docs/decisions/0002-llm-client-abstraction.md for why a
-      # real model call is untested here.
-      - name: agent loop tool-calling mechanics (fake LLM, no key needed)
-        run: python3 backend/tests/test_agent_loop_fake.py
-
-      - name: REST API surface
-        run: python3 backend/tests/test_api.py
-
-      - name: fs_tools claim-gating and path-safety
-        run: python3 backend/tests/test_fs_tools.py
+      # No Claude Code login exists here, on purpose: this proves the
+      # workbench mechanics (events, Room, artifacts, profiles, restart
+      # reconciliation, CRDT merge) without a model. Real-model behaviour is
+      # recorded in docs/reference/acceptance-2026-09-05.md.
+      - name: workbench mechanics (no Claude Code needed)
+        run: python3 backend/tests/test_workbench.py
 
   frontend-build:
     runs-on: ubuntu-latest

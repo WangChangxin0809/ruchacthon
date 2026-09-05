@@ -1,3 +1,9 @@
+# UNVERIFIED since the move to a Claude-Code-only engine (docs/decisions/0003).
+# The backend container needs the host's Claude Code login: mount ~/.claude
+# read-only and pass CLAUDE_CODE_OAUTH_TOKEN if your login uses it. Projects
+# must be mounted at the same absolute path they have on the host, because
+# worktrees are created next to the project. Prefer the two-terminal setup in
+# README.md until this is verified.
 services:
   backend:
     build:
@@ -6,24 +12,12 @@ services:
     ports:
       - "8787:8787"
     environment:
-      # All optional: the app boots and the dashboard works with none of
-      # these set, only /api/chat and /api/subagents need a real key. See
-      # README.md's "接真实模型" section.
-      LLM_PROVIDER: ${LLM_PROVIDER:-}
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_MODEL: ${LLM_MODEL:-}
-      LLM_BASE_URL: ${LLM_BASE_URL:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      WORKBENCH_MODEL: ${WORKBENCH_MODEL:-}
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN:-}
     volumes:
-      # The whole repo, bind-mounted over the image's own baked-in copy: when
-      # the chat agent's write_file tool (backend/app/fs_tools.py) edits a
-      # file, it shows up in `git status` on the host immediately. Safe to
-      # mount over pip's install too -- dependencies live under
-      # /usr/local/lib/python*/site-packages, which is outside /app and
-      # untouched by this mount.
       - .:/app
+      - ${HOME}/.claude:/root/.claude:ro
+      - ${WORKBENCH_PROJECTS:-./backend/data/projects}:${WORKBENCH_PROJECTS:-./backend/data/projects}
 
   frontend:
     build: ./frontend
