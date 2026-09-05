@@ -18,11 +18,13 @@ from typing import Any
 
 from claude_agent_sdk import HookMatcher, create_sdk_mcp_server, tool
 
+from .agents import AgentDefinitions
 from .artifacts import ArtifactStore
 from .cc_runner import CCRun, RunOutcome, RunSpec, kill_pid, pid_alive
 from .db import Database, new_id, now
 from .devservers import DevServerManager
 from .events import EventBus
+from .prompts import build_system_prompt
 from .providers import ProviderProfiles, scrub
 from .room import Room
 from .teams import Teams, mentioned_names, should_run
@@ -32,25 +34,12 @@ MAX_CONCURRENT = int(os.environ.get("WORKBENCH_MAX_CONCURRENT_RUNS", "3"))
 DEFAULT_PROJECTS_DIR = os.environ.get("WORKBENCH_PROJECTS_DIR")
 TERMINAL = {"succeeded", "failed", "cancelled", "exhausted", "interrupted"}
 
-MAIN_SYSTEM = """You are the main agent of a local multi-agent workbench for this project.
-You talk to the human in this session and you can delegate background work to workers, each of which is a
-separate Claude Code process in its own git worktree. Use the workbench tools (mcp__workbench__*) to spawn,
-list, message and cancel workers, and submit_artifact to show the human results. Do not use the built-in
-Agent tool; workers are the only way to parallelise. Keep the human informed in plain language: task names,
-not ids. When a worker finishes, summarise what it produced and where (workspace branch).
-Messages from humans are prefixed with the sender's name in brackets; several people may share this session, so address
-people by name -- in a multi-person session you only receive the messages that mention you."""
-
-WORKER_SYSTEM = """You are a background worker in a local multi-agent workbench. You are running as a separate
-process inside your own workspace ({ws_kind}) at {cwd}; only write files there. Your task: "{title}".
-Coordinate with other workers through the Room tools (mcp__room__*): call room_claim on each file or directory
-before you edit it, room_release when done, and read room_inbox if you are told to. If room_claim reports a
-conflict pending a human decision, do not touch that path; the decision will arrive as a message.
-When you finish, call submit_artifact (mcp__room__submit_artifact) at least once -- a 'diff' artifact of your
-changes plus a short 'markdown' summary -- then stop. The process ending is not acceptance: a human reviews
-your artifacts and may send feedback into this session.
-Messages from humans are prefixed with the sender's name in brackets; several people may share this session, so address
-people by name -- in a multi-person session you only receive the messages that mention you."""
+# What each in-process MCP server exposes. prompts.build_system_prompt is given
+# the union for the servers a run actually has, so a rule never names a missing tool.
+_TOOLS_ROOM = ("list_agents", "get_session", "message_agent", "ask_human", "room_claim", "room_release", "room_state",
+               "room_broadcast", "room_inbox", "room_handoff", "submit_artifact", "start_devserver")
+_TOOLS_WORKBENCH = ("spawn_worker", "list_agent_definitions", "list_workers", "message_worker", "cancel_worker",
+                    "kill_session", "rename_session", "worker_transcript")
 
 BACKLOG_HEADER = "[Earlier in this conversation, not yet shown to you]"
 BACKLOG_MAX = 30
@@ -59,10 +48,11 @@ BACKLOG_MAX = 30
 class RunManager:
     def __init__(self, db: Database, bus: EventBus, workspaces: WorkspaceManager, room: Room,
                  artifacts: ArtifactStore, devservers: DevServerManager, profiles: ProviderProfiles,
-                 teams: Teams | None = None, notify=None):
+                 teams: Teams | None = None, notify=None, agents: AgentDefinitions | None = None):
         self.db, self.bus, self.workspaces, self.room = db, bus, workspaces, room
         self.artifacts, self.devservers, self.profiles = artifacts, devservers, profiles
         self.teams = teams or Teams(db, bus)
+        self.agents = agents or AgentDefinitions(db, bus, self.teams)
         self.notify = notify
         self.live: dict[str, CCRun] = {}
         self.tasks: dict[str, asyncio.Task] = {}
@@ -152,25 +142,55 @@ class RunManager:
         return True
 
     def _spec(self, run: dict) -> RunSpec:
+        """Everything the model sees comes from the session's agent definition:
+        which prompt, which tools, which permission mode, model and caps. The
+        definition is read per run, so rebinding a session changes the next
+        run without touching the live one."""
         ws = self.workspaces.get(run["workspace_id"])
         proj = self.db.one("SELECT * FROM projects WHERE id = ?", [run["project_id"]])
+        session = self.db.one("SELECT * FROM sessions WHERE id = ?", [run["session_id"]]) or {"kind": run["kind"]}
+        d, _missing = self.agents.resolve(session.get("agent_definition_id"), run["kind"])
         profile = self.profiles.get(run["profile_id"]) if run["profile_id"] else None
-        model = (run.get("profile_snapshot") or {}).get("model") or os.environ.get("WORKBENCH_MODEL") or None
+        model = (run.get("profile_snapshot") or {}).get("model") or d.get("model") or os.environ.get("WORKBENCH_MODEL") or None
         env, _ = self.profiles.env_for(profile, model)
         hooks = {"PostToolUse": [HookMatcher(matcher=None, hooks=[self._heartbeat_hook(run)])]}
-        if run["kind"] == "main":
-            server = self._main_tools(run, proj)
-            return RunSpec(run_id=run["id"], cwd=ws["path"], prompt=run["prompt"], resume=run["cc_session_id"], model=model, env=env,
-                           mcp_servers={"workbench": server}, system_prompt_append=MAIN_SYSTEM, hooks=hooks, max_turns=80)
-        task = self.db.one("SELECT * FROM tasks WHERE id = ?", [run["task_id"]]) or {"title": "?"}
-        server = self._room_tools(run)
-        shared = ws["edit_mode"] == "shared"
+
+        shared = run["kind"] == "worker" and ws["edit_mode"] == "shared"
         if shared:
             from .shared_edit import shared_edit_hooks
             hooks["PreToolUse"] = shared_edit_hooks(self, run, ws, proj)
-        sys_append = WORKER_SYSTEM.format(ws_kind=ws["kind"] + (" / shared-edit EXPERIMENTAL" if shared else ""), cwd=ws["path"], title=task["title"])
+
+        servers: dict[str, Any] = {"room": self._room_tools(run)}
+        if d["can_spawn"]:
+            servers["workbench"] = self._main_tools(run, proj)
+        tools = [*_TOOLS_ROOM, *(_TOOLS_WORKBENCH if "workbench" in servers else ())]
+        extra = self._run_context(run, session, ws, shared, d)
+        prompt = build_system_prompt(d["prompt_role"], project_name=proj["name"] if proj else "", project_root=(proj or {}).get("root_path") or "",
+                                     main_session_id=self._main_session_id(run) if run["kind"] == "worker" else None,
+                                     tools=tools, extra="\n\n".join(x for x in (extra, d.get("system_prompt") or "") if x))
+        self.db.update("runs", run["id"], agent_definition_id=d["id"])
         return RunSpec(run_id=run["id"], cwd=ws["path"], prompt=run["prompt"], resume=run["cc_session_id"], model=model, env=env,
-                       mcp_servers={"room": server}, system_prompt_append=sys_append, hooks=hooks, max_turns=100)
+                       mcp_servers=servers, system_prompt_append=prompt, hooks=hooks,
+                       allowed_tools=list(d.get("allowed_tools") or []), disallowed_tools=list(d.get("disallowed_tools") or []),
+                       permission_mode=d.get("permission_mode") or "acceptEdits", max_turns=d.get("max_turns"),
+                       max_budget_usd=d.get("max_budget_usd"), effort=d.get("effort"))
+
+    def _run_context(self, run: dict, session: dict, ws: dict, shared: bool, d: dict) -> str:
+        """The few facts that are true of this run only, appended to the role
+        prompt: where it may write, what it was asked to do, who is in the
+        room with it."""
+        lines = [f"Your workspace is {ws['kind']}{' / shared-edit EXPERIMENTAL' if shared else ''} at {ws['path']}; only write files there."]
+        if run["task_id"]:
+            task = self.db.one("SELECT title FROM tasks WHERE id = ?", [run["task_id"]])
+            if task:
+                lines.append(f'Your task: "{task["title"]}".')
+        lines.append(f'You are "{session.get("agent_name") or session.get("title") or d["name"]}" in this workbench; '
+                     f"people address you by that name after an @.")
+        return "\n".join(lines)
+
+    def _main_session_id(self, run: dict) -> str | None:
+        s = self.db.one("SELECT id FROM sessions WHERE project_id = ? AND kind = 'main' ORDER BY created_at LIMIT 1", [run["project_id"]])
+        return s["id"] if s else None
 
     def _heartbeat_hook(self, run: dict):
         async def hook(input_data: dict, tool_use_id: str | None, context: Any) -> dict:
@@ -440,7 +460,7 @@ class RunManager:
     def spawn_worker(self, project: dict, title: str, instructions: str, *, isolation: str = "worktree",
                      depends_on: list[str] | None = None, profile_id: str | None = None, edit_mode: str = "exclusive",
                      workspace_id: str | None = None, model: str | None = None, created_by: str | None = None,
-                     members: list[str] | None = None) -> dict:
+                     members: list[str] | None = None, agent_definition_id: str | None = None) -> dict:
         t = now()
         task = self.db.insert("tasks", {"id": new_id("task"), "project_id": project["id"], "title": title, "description": instructions,
                                         "kind": "worker", "parent_task_id": None, "depends_on": depends_on or [], "review_status": "unreviewed",
@@ -458,17 +478,20 @@ class RunManager:
         self.db.update("tasks", task["id"], workspace_id=ws["id"])
         task["workspace_id"] = ws["id"]
         try:
-            return self._start_worker(project, task, ws, title, instructions, profile_id, model=model, created_by=created_by, members=members)
+            return self._start_worker(project, task, ws, title, instructions, profile_id, model=model, created_by=created_by, members=members,
+                                      agent_definition_id=agent_definition_id)
         except Exception:
             self.db.execute("DELETE FROM tasks WHERE id = ?", [task["id"]])
             self.workspaces.remove(ws, project)
             raise
 
     def _start_worker(self, project: dict, task: dict, ws: dict, title: str, instructions: str, profile_id: str | None,
-                      model: str | None = None, created_by: str | None = None, members: list[str] | None = None) -> dict:
+                      model: str | None = None, created_by: str | None = None, members: list[str] | None = None,
+                      agent_definition_id: str | None = None) -> dict:
         t = now()
         session = self.db.insert("sessions", {"id": new_id("ses"), "project_id": project["id"], "task_id": task["id"], "kind": "worker",
-                                              "title": title, "cc_session_id": None, "created_at": t, "created_by": created_by, "agent_name": title})
+                                              "title": title, "cc_session_id": None, "created_at": t, "created_by": created_by, "agent_name": title,
+                                              "agent_definition_id": agent_definition_id or self.agents.default_for(project.get("team_id"), "worker")})
         # a worker session is strict: creator + agent (+ whoever the spawner was already sharing with)
         self.teams.ensure_session_conversation(session, created_by, members)
         self.bus.emit("task", self.task_view(task), project_id=project["id"], task_id=task["id"])
@@ -500,17 +523,126 @@ class RunManager:
                               profile_id=profile_id or self.inheritable_profile(last["profile_id"] if last else None, creator), created_by=creator)
         return {"ok": True, "run": run}
 
+    # ---- agent-to-agent addressing -----------------------------------------
+    def _reachable(self, run: dict, session: dict) -> str | None:
+        """None if this run may address that session, else the refusal text.
+        Reach follows the human membership model of batch 1 rather than the
+        project: an agent speaks for the person who started it, so it can
+        reach exactly the sessions that person is a member of (AO's
+        sessionguard refuses, it does not silently drop)."""
+        if session["project_id"] != run["project_id"]:
+            return "refused: that session belongs to a different project"
+        if session["id"] == run["session_id"]:
+            return "refused: that is your own session; just answer in it"
+        conv = self.teams.conv_of_session(session["id"])
+        if conv is None:
+            return None
+        owner = run.get("created_by")
+        if owner is None:
+            return None
+        u = self.db.one("SELECT * FROM users WHERE id = ?", [owner])
+        if u and self.teams.is_member(u, conv["id"]):
+            return None
+        return f"refused: {session.get('agent_name') or session['title']} is private to another person's conversation"
+
+    def _find_session(self, run: dict, to: str) -> tuple[dict | None, str | None]:
+        """`to` is a session id, a task id, 'main', or an agent's name."""
+        db = self.db
+        s = db.one("SELECT * FROM sessions WHERE id = ?", [to])
+        if not s and to.startswith("task"):
+            s = db.one("SELECT * FROM sessions WHERE task_id = ? ORDER BY created_at DESC LIMIT 1", [to])
+        if not s and to.strip().lower() in ("main", "orchestrator", "主 agent", "主控"):
+            s = db.one("SELECT * FROM sessions WHERE project_id = ? AND kind = 'main' ORDER BY created_at LIMIT 1", [run["project_id"]])
+        if not s:
+            s = db.one("SELECT * FROM sessions WHERE project_id = ? AND (agent_name = ? OR title = ?) ORDER BY created_at DESC LIMIT 1",
+                       [run["project_id"], to, to])
+        if not s:
+            s = db.one("SELECT * FROM sessions WHERE task_id IN (SELECT id FROM tasks WHERE project_id = ? AND title = ?) "
+                       "ORDER BY created_at DESC LIMIT 1", [run["project_id"], to])
+        if not s:
+            return None, f"refused: no agent called '{to}' in this project (call list_agents to see the names)"
+        return s, self._reachable(run, s)
+
+    def _agent_prefix(self, run: dict) -> str:
+        me = self.room.identity(run)
+        return f"[from agent {me['agent_name'] or me['task_title']} (session {run['session_id']})] "
+
+    def _session_card(self, s: dict) -> dict:
+        task = self.db.one("SELECT id, title, status FROM tasks WHERE id = ?", [s["task_id"]]) if s["task_id"] else None
+        last = self.db.one("SELECT status, ended_at, result_summary FROM runs WHERE session_id = ? ORDER BY created_at DESC LIMIT 1", [s["id"]])
+        ws = self.db.one("SELECT path, branch, kind FROM workspaces WHERE id = ("
+                         "SELECT workspace_id FROM runs WHERE session_id = ? ORDER BY created_at DESC LIMIT 1)", [s["id"]])
+        d, _ = self.agents.resolve(s.get("agent_definition_id"), s["kind"])
+        return {"session_id": s["id"], "task_id": s["task_id"], "title": task["title"] if task else s["title"],
+                "agent_name": s.get("agent_name") or s["title"], "kind": s["kind"], "agent_definition_id": d["id"],
+                "status": (last or {}).get("status") or "idle", "branch": (ws or {}).get("branch"),
+                "workspace": (ws or {}).get("path"), "summary": ((last or {}).get("result_summary") or "")[:300]}
+
+    async def message_agent(self, run: dict, to: str, text: str) -> dict | str:
+        """One agent talks to another: same delivery path as a human message,
+        with the sender named the way AO names it (`[from <id>]`)."""
+        target, refusal = self._find_session(run, to)
+        if refusal:
+            return refusal
+        me = self.room.identity(run)
+        body = self._agent_prefix(run) + text
+        msg = self.db.insert("messages", {"id": new_id("msg"), "session_id": target["id"], "run_id": None, "role": "user",
+                                          "author": me["agent_name"] or "agent", "blocks": [{"type": "text", "text": body}],
+                                          "meta": {"from_agent": me["agent_name"], "from_session": run["session_id"]},
+                                          "created_at": now(), "delivered_to_agent": 1})
+        self.bus.emit("message", msg, project_id=target["project_id"], task_id=target.get("task_id"), session_id=target["id"])
+        d = await self.route_to_agent(target, body, body, author=me["agent_name"] or "agent", user_id=None, message_id=msg["id"],
+                                      profile_id=self.inheritable_profile(run["profile_id"], target.get("created_by")))
+        return {"delivered": bool(d.get("ok")), "how": d.get("how"), "session_id": target["id"], "agent": target.get("agent_name") or target["title"]}
+
+    def ask_human(self, run: dict, question: str, options: list[str]) -> dict:
+        """A question posted into the session as an agent message the UI can
+        render with one-click answers, plus a notification for every human
+        member. The agent is told (in its prompt) to end its turn after this."""
+        session = self.db.one("SELECT * FROM sessions WHERE id = ?", [run["session_id"]])
+        msg = self.db.insert("messages", {"id": new_id("msg"), "session_id": run["session_id"], "run_id": run["id"], "role": "assistant",
+                                          "author": "claude", "blocks": [{"type": "text", "text": question}],
+                                          "meta": {"needs_human": True, "options": options}, "created_at": now()})
+        self.bus.emit("message", msg, project_id=run["project_id"], task_id=run["task_id"], run_id=run["id"], session_id=run["session_id"])
+        conv = self.teams.conv_of_session(run["session_id"])
+        if conv and self.notify:
+            humans = [m["member_id"] for m in self.teams.conv_members(conv["id"]) if m["member_kind"] == "user"]
+            name = session.get("agent_name") or session.get("title") or "agent"
+            self.notify.send_many(humans, "question", f"{name} 在等你回答", question[:200],
+                                  project_id=run["project_id"], session_id=run["session_id"], conversation_id=conv["id"])
+        return {"posted": True, "message_id": msg["id"], "asked": len(options)}
+
+    def rename_session(self, session: dict, title: str) -> dict:
+        title = (title or "").strip()[:80]
+        if not title:
+            return {"ok": False, "error": "empty title"}
+        self.db.update("sessions", session["id"], title=title, agent_name=title)
+        if session["task_id"]:
+            self.db.update("tasks", session["task_id"], title=title, updated_at=now())
+        row = self.db.one("SELECT * FROM sessions WHERE id = ?", [session["id"]])
+        self.bus.emit("session", row, project_id=row["project_id"], session_id=row["id"])
+        return {"ok": True, "session_id": row["id"], "title": title}
+
     # ---- tool servers ------------------------------------------------------
     def _main_tools(self, run: dict, project: dict):
         mgr = self
 
         @tool("spawn_worker", "Start a background worker (a separate Claude Code process in its own git worktree) on a task. "
-              "Returns the task id. Use depends_on to chain tasks.",
-              _schema({"title": "string", "instructions": "string", "depends_on": {"type": "array", "items": {"type": "string"}}}, ["title", "instructions"]))
+              "Returns the task id. title is the short sidebar label (<= 20 characters), instructions the full task. "
+              "agent_definition_id picks a different kind of agent (list them with list_agent_definitions).",
+              _schema({"title": "string", "instructions": "string", "depends_on": {"type": "array", "items": {"type": "string"}},
+                       "agent_definition_id": "string", "model": "string", "isolation": "string", "edit_mode": "string"}, ["title", "instructions"]))
         async def spawn_worker(args):
             conv = mgr.teams.conv_of_session(run["session_id"])
             members = [m["member_id"] for m in mgr.teams.conv_members(conv["id"]) if m["member_kind"] == "user"] if conv else []
-            r = mgr.spawn_worker(project, args["title"], args["instructions"], depends_on=args.get("depends_on") or [],
+            definition = args.get("agent_definition_id")
+            if definition:
+                d = mgr.agents.get(definition)
+                if not d or d["role"] not in ("worker", "any"):
+                    return _ok(f"refused: no worker agent definition '{definition}' (call list_agent_definitions)")
+            r = mgr.spawn_worker(project, args["title"][:20], args["instructions"], depends_on=args.get("depends_on") or [],
+                                 isolation=args.get("isolation") or "worktree", edit_mode=args.get("edit_mode") or "exclusive",
+                                 model=args.get("model"), agent_definition_id=definition,
                                  profile_id=run["profile_id"], created_by=run.get("created_by"), members=members)
             return _ok({"task_id": r["task"]["id"], "run_id": r["run"]["id"], "workspace": r["workspace"]["path"], "branch": r["workspace"]["branch"]})
 
@@ -542,14 +674,30 @@ class RunManager:
                               [sid, int(args.get("limit") or 20)])
             return _ok(list(reversed(rows)))
 
-        @tool("submit_artifact", "Show the human a result. kind: markdown|image|html|file|diff. content for markdown/html; path (workspace-relative) for image/file/html; diff needs neither.",
-              _schema({"kind": "string", "title": "string", "content": "string", "path": "string"}, ["kind", "title"]))
-        async def submit_artifact(args):
-            art = mgr.artifacts.submit(run, args["kind"], args["title"], content=args.get("content"), path=args.get("path"))
-            mgr._notify_artifact(run, {**art, "title": args["title"]})
-            return _ok(art)
+        @tool("list_agent_definitions", "The kinds of agent you can spawn: id, name, what it is for", {})
+        async def list_agent_definitions(args):
+            rows = mgr.agents.visible_for_project(project, role_in=("worker", "any"))
+            return _ok([{"id": d["id"], "name": d["name"], "description": d["description"], "permission": d["permission_mode"]} for d in rows])
 
-        return create_sdk_mcp_server("workbench", "1.0.0", [spawn_worker, list_workers, message_worker, cancel_worker, worker_transcript, submit_artifact])
+        @tool("kill_session", "Terminate an agent's current run. to: a session id, a task id or an agent's name.", {"to": str})
+        async def kill_session(args):
+            s_, refusal = mgr._find_session(run, args["to"])
+            if refusal:
+                return _ok(refusal)
+            active = mgr.active_run(s_["id"])
+            if not active:
+                return _ok({"ok": False, "error": "that agent is not running"})
+            return _ok(await mgr.cancel(active["id"], actor="main-agent"))
+
+        @tool("rename_session", "Rename an agent's display title (<= 20 characters is best)", {"to": str, "title": str})
+        async def rename_session(args):
+            s_, refusal = mgr._find_session(run, args["to"])
+            if refusal:
+                return _ok(refusal)
+            return _ok(mgr.rename_session(s_, args["title"]))
+
+        return create_sdk_mcp_server("workbench", "1.0.0", [spawn_worker, list_workers, list_agent_definitions, message_worker,
+                                                            cancel_worker, kill_session, rename_session, worker_transcript])
 
     def _room_tools(self, run: dict):
         mgr = self
@@ -574,9 +722,41 @@ class RunManager:
         async def room_broadcast(args):
             return _ok(await mgr.room.broadcast(run, args["text"]))
 
-        @tool("room_inbox", "Read messages addressed to you or broadcast to everyone", {})
+        @tool("room_inbox", "Read messages addressed to you or broadcast to everyone. Pass the next_since you got last time to read only what is new.",
+              _schema({"since": "string"}, []))
         async def room_inbox(args):
-            return _ok([{"kind": m["kind"], "from_run_id": m["from_run_id"], "payload": m["payload"], "at": m["created_at"]} for m in mgr.room.inbox(run)])
+            rows = mgr.room.inbox(run, args.get("since") or None)
+            items = [{"kind": m["kind"], "from_run_id": m["from_run_id"], "payload": m["payload"], "at": m["created_at"]} for m in rows]
+            # rows come back newest first; the cursor is the newest one seen
+            return _ok({"items": items, "next_since": (rows[0]["created_at"] if rows else args.get("since") or "")})
+
+        @tool("list_agents", "List every agent in this project you can reach: name, kind, task, status, branch", {})
+        async def list_agents(args):
+            rows = mgr.db.all("SELECT * FROM sessions WHERE project_id = ? ORDER BY created_at", [run["project_id"]])
+            return _ok([mgr._session_card(x) for x in rows if x["id"] == run["session_id"] or mgr._reachable(run, x) is None])
+
+        @tool("get_session", "Inspect one agent: its state and its last messages", _schema({"session_id": "string", "limit": "integer"}, ["session_id"]))
+        async def get_session(args):
+            s_, refusal = mgr._find_session(run, args["session_id"])
+            if refusal:
+                return _ok(refusal)
+            rows = mgr.db.all("SELECT role, author, blocks, created_at FROM messages WHERE session_id = ? ORDER BY created_at DESC LIMIT ?",
+                              [s_["id"], min(int(args.get("limit") or 10), 50)])
+            return _ok({**mgr._session_card(s_), "messages": list(reversed(rows))})
+
+        @tool("message_agent", "Send a message to another agent. to: a session id, a task id, an agent's name, or 'main' for the orchestrator.",
+              {"to": str, "text": str})
+        async def message_agent(args):
+            return _ok(await mgr.message_agent(run, args["to"], args["text"]))
+
+        @tool("send_message", "Alias of message_agent: send a message to another agent by session id, task id or name.", {"to": str, "text": str})
+        async def send_message(args):
+            return _ok(await mgr.message_agent(run, args["to"], args["text"]))
+
+        @tool("ask_human", "Ask the people in this session a question, then END YOUR TURN. The answer arrives as the next human message.",
+              _schema({"question": "string", "options": {"type": "array", "items": {"type": "string"}}}, ["question"]))
+        async def ask_human(args):
+            return _ok(mgr.ask_human(run, args["question"], [str(o) for o in (args.get("options") or [])][:6]))
 
         @tool("room_handoff", "Hand a path you own to another task (by task id) with a note", _schema({"path": "string", "to_task_id": "string", "note": "string"}, ["path", "to_task_id"]))
         async def room_handoff(args):
@@ -603,6 +783,7 @@ class RunManager:
             return _ok({**res, "artifact_id": row["id"]})
 
         return create_sdk_mcp_server("room", "1.0.0", [room_claim, room_release, room_state, room_broadcast, room_inbox, room_handoff,
+                                                       list_agents, get_session, message_agent, send_message, ask_human,
                                                        submit_artifact, start_devserver])
 
 

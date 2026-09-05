@@ -145,6 +145,14 @@ class AgentDefinitions:
             out.append(d)
         return out
 
+    def visible_for_project(self, project: dict, role_in: tuple[str, ...] = ROLES) -> list[dict]:
+        """What an agent running in this project may pick: the built-ins plus
+        the owning team's own definitions (an agent has no user of its own,
+        so team scope is the boundary)."""
+        rows = self.db.all("SELECT * FROM agent_definitions WHERE trust = 'system' OR team_id IS ? ORDER BY "
+                           "CASE trust WHEN 'system' THEN 0 ELSE 1 END, name", [project.get("team_id")])
+        return [d for d in rows if d["role"] in role_in]
+
     def public(self, d: dict, user: dict | None = None) -> dict:
         owner = self.db.one("SELECT id, handle, display_name FROM users WHERE id = ?", [d["owner_id"]]) if d.get("owner_id") else None
         return {**d, "is_default": bool(d.get("is_default")), "can_spawn": bool(d.get("can_spawn")),

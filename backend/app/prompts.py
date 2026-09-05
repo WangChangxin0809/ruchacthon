@@ -23,6 +23,7 @@ TOOL_CATALOG: dict[str, str] = {
     "spawn_worker": "start a background worker (a separate Claude Code process in its own git worktree) on a task; "
                     "title is the sidebar label, instructions the full task; depends_on chains tasks. Returns the task id.",
     "list_workers": "list worker tasks in this project with their real status, review state and merge state.",
+    "list_agent_definitions": "the kinds of agent you can spawn (id, name, what each is for); pass an id to spawn_worker.",
     "list_agents": "list every agent in this project: name, kind, task, status, activity, branch.",
     "list_sessions": "list every agent session in this project; include_terminated shows finished ones.",
     "get_session": "inspect one session: its state and its last messages.",

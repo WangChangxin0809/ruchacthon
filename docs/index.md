@@ -57,6 +57,7 @@ rather than waiting for CI, because that is how often the cost is paid.
 | Know why Claude Code is the only engine, and what was probed | [0003](decisions/0003-claude-code-only-harness.md) | — |
 | Build the multi-user, multi-agent milestone (users, teams, conversations, agent definitions, vendor keys, proxy) | [0004 track3 design](decisions/0004-track3-multi-user-multi-agent.md) | per its §8 batches |
 | Know why users, teams and one conversation model exist, and what was rejected | [0005](decisions/0005-users-teams-conversations.md) | — |
+| Change what an agent is allowed to do, or who it may talk to | [0006](decisions/0006-agent-definitions-and-reach.md) | `backend/app/agents.py`, `backend/app/runs.py` |
 | Add a route that reads or writes on somebody's behalf | [ARCHITECTURE.md](../ARCHITECTURE.md) invariant 7 | `backend/app/teams.py` (visibility), `routes_*.py` |
 | Know why the old hand-written model loop existed (historical) | [0002](decisions/0002-llm-client-abstraction.md) | — |
 | See what a real Claude Code run proved, and what is still unverified | [acceptance 2026-09-05](reference/acceptance-2026-09-05.md) | — |

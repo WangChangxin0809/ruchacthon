@@ -25,7 +25,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import ccconfig, routes_auth, routes_conversations
+from . import ccconfig, routes_agents, routes_auth, routes_conversations
+from .agents import AgentDefinitions
 from .artifacts import ArtifactStore
 from .auth import Auth, admin, bearer_of, me
 from .cc_runner import CCRun, RunSpec
@@ -50,10 +51,12 @@ secrets = SecretStore()
 profiles = ProviderProfiles(db, secrets)
 notify = Notifier(db, bus)
 teams = Teams(db, bus, notify)
+agents = AgentDefinitions(db, bus, teams)
 auth = Auth(db, teams)
 PROJECTS_DIR = Path(os.environ.get("WORKBENCH_PROJECTS_DIR", str(DATA_DIR_PATH / "projects")))
 runs: RunManager  # built in lifespan: it needs the running loop
-svc = SimpleNamespace(db=db, bus=bus, auth=auth, teams=teams, notify=notify, profiles=profiles, workspaces=workspaces, runs=lambda: runs)
+svc = SimpleNamespace(db=db, bus=bus, auth=auth, teams=teams, agents=agents, notify=notify, profiles=profiles,
+                      workspaces=workspaces, runs=lambda: runs)
 
 
 def _decision_pending(d: dict) -> None:
@@ -70,7 +73,7 @@ room.on_decision_pending = _decision_pending
 async def lifespan(app: FastAPI):
     global runs
     bus.bind_loop(asyncio.get_running_loop())
-    runs = RunManager(db, bus, workspaces, room, artifacts, devservers, profiles, teams=teams, notify=notify)
+    runs = RunManager(db, bus, workspaces, room, artifacts, devservers, profiles, teams=teams, notify=notify, agents=agents)
     recovered = runs.reconcile()
     devservers.reconcile_after_restart()
     workspaces.sweep_orphans()
@@ -140,6 +143,7 @@ async def _forbidden(request: Request, exc: PermissionError):
 
 app.include_router(routes_auth.make_router(svc))
 app.include_router(routes_conversations.make_router(svc))
+app.include_router(routes_agents.make_router(svc))
 
 
 def _get(table: str, id_: str) -> dict:
@@ -347,11 +351,12 @@ def put_settings(body: SettingsIn, user: dict = Depends(admin)):
 
 # ---- sessions / chat ------------------------------------------------------------
 def _session_view(s: dict) -> dict:
+    base = {**s, "agent_definition": agents.binding(s)}
     conv = teams.conv_of_session(s["id"])
     if not conv:
-        return {**s, "conversation_id": None, "member_count": 0, "human_count": 0}
+        return {**base, "conversation_id": None, "member_count": 0, "human_count": 0}
     members = teams.conv_members(conv["id"])
-    return {**s, "conversation_id": conv["id"], "member_count": len(members), "agent_reply": conv["agent_reply"],
+    return {**base, "conversation_id": conv["id"], "member_count": len(members), "agent_reply": conv["agent_reply"],
             "human_count": sum(1 for m in members if m["member_kind"] == "user")}
 
 
@@ -361,7 +366,8 @@ def main_session(project_id: str, user: dict = Depends(me)):
     s = db.one("SELECT * FROM sessions WHERE project_id = ? AND kind = 'main' ORDER BY created_at DESC LIMIT 1", [project_id])
     if not s:
         s = db.insert("sessions", {"id": new_id("ses"), "project_id": project_id, "task_id": None, "kind": "main", "title": f"{p['name']} · main",
-                                   "cc_session_id": None, "created_at": now(), "created_by": user["id"], "agent_name": "主 agent"})
+                                   "cc_session_id": None, "created_at": now(), "created_by": user["id"], "agent_name": "主 agent",
+                                   "agent_definition_id": agents.default_for(p.get("team_id"), "orchestrator")})
         teams.ensure_session_conversation(s, user["id"])
         bus.emit("session", s, project_id=project_id, session_id=s["id"])
     teams.join_main_session(user, p, s)
@@ -388,6 +394,30 @@ def get_session(session_id: str, user: dict = Depends(me)):
     conv = teams.conv_of_session(session_id)
     return {**_session_view(s), "runs": runs_, "workspace": ws, "members": teams.conv_members(conv["id"]) if conv else [],
             "owner_id": conv["owner_id"] if conv else None}
+
+
+class SessionPatch(BaseModel):
+    agent_definition_id: str | None = None
+    title: str | None = None
+
+
+@app.patch("/api/sessions/{session_id}")
+def patch_session(session_id: str, body: SessionPatch, user: dict = Depends(me)):
+    """Rebinding takes effect on the next run, so a live run would silently
+    keep the old definition -- refuse instead of lying about it."""
+    s = _session_for(user, session_id)
+    fields: dict = {}
+    if body.agent_definition_id is not None:
+        if runs.active_run(session_id):
+            raise HTTPException(409, "会话正在运行，等它结束再换")
+        fields["agent_definition_id"] = agents.check_for_kind(user, body.agent_definition_id, s["kind"])["id"]
+    if body.title is not None and body.title.strip():
+        fields["title"] = body.title.strip()[:80]
+    if fields:
+        db.update("sessions", session_id, **fields)
+        s = db.one("SELECT * FROM sessions WHERE id = ?", [session_id])
+        bus.emit("session", s, project_id=s["project_id"], session_id=session_id)
+    return _session_view(s)
 
 
 @app.get("/api/sessions/{session_id}/messages")
@@ -418,6 +448,7 @@ class TaskIn(BaseModel):
     depends_on: list[str] = []
     profile_id: str | None = None
     model: str | None = None
+    agent_definition_id: str | None = None
     edit_mode: str = "exclusive"         # exclusive | shared (experimental)
     workspace_id: str | None = None
 
@@ -447,10 +478,12 @@ def list_tasks(project_id: str, user: dict = Depends(me)):
 @app.post("/api/projects/{project_id}/tasks")
 def create_task(project_id: str, body: TaskIn, user: dict = Depends(me)):
     p = _project_for(user, project_id, min_role="member")
+    definition = (agents.check_for_kind(user, body.agent_definition_id, "worker")["id"] if body.agent_definition_id
+                  else agents.default_for(p.get("team_id"), "worker"))
     try:
         return runs.spawn_worker(p, body.title, body.instructions, isolation=body.isolation, depends_on=body.depends_on,
                                  profile_id=body.profile_id, edit_mode=body.edit_mode, workspace_id=body.workspace_id, model=body.model,
-                                 created_by=user["id"])
+                                 created_by=user["id"], agent_definition_id=definition)
     except RuntimeError as e:
         raise HTTPException(400, str(e))
 
