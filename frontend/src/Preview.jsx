@@ -22,14 +22,14 @@ export function AgentPreview({ session, onCleared }) {
 
   if (!pv) {
     return (
-      <div className="text-[12px] text-[var(--faint)] border border-dashed border-[var(--border)] rounded-lg py-6 px-3 text-center">
-        agent 还没有选要给你看的东西。它做出网页、文档、图片或跑起一个服务时会自己调 preview 打开这里。
+      <div className="h-full grid place-items-center text-[12px] text-[var(--faint)] border border-dashed border-[var(--border)] rounded-lg px-4 text-center">
+        <span>agent 还没有选要给你看的东西。<br />它做出网页、文档、图片或跑起一个服务时会自己调 preview 打开这里。</span>
       </div>
     );
   }
   return (
-    <div className="space-y-2">
-      <div className="row text-[11px] text-[var(--muted)]">
+    <div className="h-full flex flex-col min-h-0 gap-2">
+      <div className="row text-[11px] text-[var(--muted)] shrink-0">
         <I.globe className="w-3.5 h-3.5" />
         <span className="mono truncate flex-1" title={pv.url || pv.path}>{pv.title || pv.url || pv.path}</span>
         <a className="text-[var(--working)] hover:underline" href={src} target="_blank" rel="noreferrer">新标签打开</a>
@@ -38,16 +38,20 @@ export function AgentPreview({ session, onCleared }) {
       {(kind === "html" || kind === "url" || kind === "pdf") && (
         <iframe key={`${src}#${rev}`} title={pv.title || "预览"} src={src}
           sandbox={kind === "url" ? "allow-scripts allow-forms allow-same-origin" : "allow-scripts allow-forms"}
-          className="w-full h-[420px] bg-white rounded border border-[var(--border)]" />
+          className="flex-1 min-h-0 w-full bg-white rounded border border-[var(--border)]" />
       )}
-      {kind === "image" && <img alt={pv.title || pv.path} src={`${src}#${rev}`} className="max-h-[420px] rounded border border-[var(--border)]" />}
+      {kind === "image" && (
+        <div className="flex-1 min-h-0 overflow-auto rounded border border-[var(--border)] grid place-items-center bg-[var(--subtle)]">
+          <img alt={pv.title || pv.path} src={`${src}#${rev}`} className="max-w-full" />
+        </div>
+      )}
       {kind === "markdown" && (
-        <div className="bg-white rounded border border-[var(--border)] p-3 max-h-[420px] overflow-auto">
+        <div className="flex-1 min-h-0 bg-white rounded border border-[var(--border)] p-3 overflow-auto">
           {text === null ? <span className="text-[12px] text-[var(--muted)]">加载中…</span> : <Text text={text} />}
         </div>
       )}
       {kind === "text" && (
-        <pre className="whitespace-pre-wrap text-[12px] bg-[var(--subtle)] rounded p-3 max-h-[420px] overflow-auto">{text ?? "加载中…"}</pre>
+        <pre className="flex-1 min-h-0 whitespace-pre-wrap text-[12px] bg-[var(--subtle)] rounded p-3 overflow-auto">{text ?? "加载中…"}</pre>
       )}
       {kind === "file" && <a className="text-[13px] text-[var(--working)] underline" href={src} target="_blank" rel="noreferrer">下载 {pv.path}</a>}
     </div>

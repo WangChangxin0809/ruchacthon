@@ -5,6 +5,9 @@ import Composer from "./Composer";
 import { Avatar, AvatarStack, Badge, Button, Dialog, Dot, I, STATUS_LABEL, Text, fmtDur, fmtRel, fmtTime, permissionLabel, toneOf } from "./ui";
 
 const TERMINAL = ["succeeded", "failed", "cancelled", "interrupted", "exhausted"];
+const MIN_INS = 280;
+const clampW = (w) => Math.max(MIN_INS, Math.min(w, Math.max(MIN_INS, window.innerWidth - 420)));
+const safeGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
 const EXPLORE = new Set(["Read", "Grep", "Glob", "ToolSearch", "LS", "WebFetch", "WebSearch"]);
 const EDIT = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
 
@@ -93,7 +96,11 @@ export default function SessionView({ session, task, messages, streams, runStatu
   const [note, setNote] = useState("");
   const [stuck, setStuck] = useState(false);
   const [members, setMembers] = useState(false);
-  const [inspector, setInspector] = useState(() => { try { return localStorage.getItem("wb.inspector") || "summary"; } catch { return "summary"; } });
+  const [inspector, setInspector] = useState(() => { const v = safeGet("wb.inspector"); return v === null ? "summary" : v; });
+  // the pane is where a web page gets looked at, so it starts wide and the
+  // border drags; 340px was fine for a summary and far too narrow for a page
+  const [insW, setInsW] = useState(() => { const n = Number(safeGet("wb.inspectorW")); return n >= MIN_INS && n <= 1200 ? n : 560; });
+  const drag = useRef(null);
   const [diff, setDiff] = useState(null);
   const bottomRef = useRef(null); const listRef = useRef(null);
   const runs = session?.runs || [];
@@ -114,7 +121,15 @@ export default function SessionView({ session, task, messages, streams, runStatu
 
   useEffect(() => { if (!stuck) bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length, streaming, stuck]);
   useEffect(() => { if (task?.id) api.taskDiff(task.id).then(setDiff).catch(() => setDiff(null)); else setDiff(null); }, [task?.id, task?.latest_run?.status, artifacts?.length]);
-  useEffect(() => { try { localStorage.setItem("wb.inspector", inspector); } catch { /* ignore */ } }, [inspector]);
+  // "" is the closed pane; storing null would come back as the string "null"
+  useEffect(() => { try { localStorage.setItem("wb.inspector", inspector || ""); } catch { /* ignore */ } }, [inspector]);
+  useEffect(() => { try { localStorage.setItem("wb.inspectorW", String(insW)); } catch { /* ignore */ } }, [insW]);
+  useEffect(() => {
+    const move = (e) => { if (drag.current !== null) setInsW(clampW(window.innerWidth - e.clientX)); };
+    const up = () => { drag.current = null; document.body.style.userSelect = ""; };
+    window.addEventListener("mousemove", move); window.addEventListener("mouseup", up);
+    return () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+  }, []);
   const onScroll = () => { const el = listRef.current; if (el) setStuck(el.scrollHeight - el.scrollTop - el.clientHeight > 120); };
 
   // The server decides whether the agent is actually woken (the @ rule), and
@@ -153,7 +168,8 @@ export default function SessionView({ session, task, messages, streams, runStatu
           {session.kind !== "main" && <button onClick={onOpenMain} className="btn btn-primary btn-sm" title="主 agent"><I.sitemap className="w-4 h-4" /></button>}
           <span className="w-px h-5 bg-[var(--border)] mx-1" />
           {insTab("summary", <I.list className="w-4 h-4" />, "摘要")}
-          {insTab("preview", <I.globe className="w-4 h-4" />, "预览（agent 提交的成果）")}
+          {insTab("preview", <I.globe className="w-4 h-4" />, "预览（agent 打开的页面 / 文档）")}
+          {insTab("artifacts", <I.star className="w-4 h-4" />, "提交的成果与反馈")}
           {insTab("files", <I.files className="w-4 h-4" />, "变更文件")}
         </div>
 
@@ -230,29 +246,33 @@ export default function SessionView({ session, task, messages, streams, runStatu
       {members && <SessionMembers session={session} me={me} onClose={() => setMembers(false)} onChanged={() => refetch("sessions")} />}
 
       {inspector && (
-        <aside className="w-[340px] shrink-0 border-l border-[var(--border)] bg-white overflow-y-auto">
-          {inspector === "summary" && <Summary session={session} task={task} runs={runs} room={room} refetch={refetch} live={live} artifacts={artifacts} />}
-          {inspector === "preview" && (
-            <div className="p-3 space-y-4">
-              <div>
-                <div className="label mb-2">agent 打开的</div>
+        <>
+          <div title="拖动改变宽度，双击回到默认" onMouseDown={() => { drag.current = 1; document.body.style.userSelect = "none"; }}
+            onDoubleClick={() => setInsW(560)}
+            className="w-1 shrink-0 cursor-col-resize bg-[var(--border)] hover:bg-[var(--accent)] transition-colors" />
+          <aside style={{ width: insW }} className="shrink-0 border-l border-[var(--border)] bg-white flex flex-col min-h-0">
+            {inspector === "summary" && <div className="flex-1 min-h-0 overflow-y-auto"><Summary session={session} task={task} runs={runs} room={room} refetch={refetch} live={live} artifacts={artifacts} /></div>}
+            {inspector === "preview" && (
+              <div className="flex-1 min-h-0 p-3">
                 <AgentPreview session={session} onCleared={() => refetch("sessions")} />
               </div>
-              <div>
+            )}
+            {inspector === "artifacts" && (
+              <div className="flex-1 min-h-0 p-3 overflow-y-auto">
                 <div className="label mb-2">提交的成果</div>
                 <Preview artifacts={artifacts} tasks={task ? [task] : []} selectedTaskId={task?.id || null} onSelectTask={() => {}} />
               </div>
-            </div>
-          )}
-          {inspector === "files" && (
-            <div className="p-3">
-              <div className="label mb-2">变更文件{task?.branch ? ` · ${task.branch}` : ""}</div>
-              {!task ? <div className="text-[12px] text-[var(--muted)]">主 agent 直接在项目目录里改；看 git 状态请在项目里执行 git diff。</div>
-                : diff === null ? <div className="text-[12px] text-[var(--muted)]">加载中…</div>
-                : diff.available ? <DiffText diff={diff.diff} /> : <div className="text-[12px] text-amber-600">无法生成 diff：{diff.reason}</div>}
-            </div>
-          )}
-        </aside>
+            )}
+            {inspector === "files" && (
+              <div className="flex-1 min-h-0 p-3 overflow-y-auto">
+                <div className="label mb-2">变更文件{task?.branch ? ` · ${task.branch}` : ""}</div>
+                {!task ? <div className="text-[12px] text-[var(--muted)]">主 agent 直接在项目目录里改；看 git 状态请在项目里执行 git diff。</div>
+                  : diff === null ? <div className="text-[12px] text-[var(--muted)]">加载中…</div>
+                  : diff.available ? <DiffText diff={diff.diff} /> : <div className="text-[12px] text-amber-600">无法生成 diff：{diff.reason}</div>}
+              </div>
+            )}
+          </aside>
+        </>
       )}
     </div>
   );
