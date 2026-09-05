@@ -55,6 +55,7 @@ rather than waiting for CI, because that is how often the cost is paid.
 | Understand the system | [ARCHITECTURE.md](../ARCHITECTURE.md) | — |
 | Know why the repo is shaped this way | [0001](decisions/0001-agent-conventions.md) | — |
 | Know why Claude Code is the only engine, and what was probed | [0003](decisions/0003-claude-code-only-harness.md) | — |
+| Build the multi-user, multi-agent milestone (users, teams, conversations, agent definitions, vendor keys, proxy) | [0004 track3 design](decisions/0004-track3-multi-user-multi-agent.md) | per its §8 batches |
 | Know why the old hand-written model loop existed (historical) | [0002](decisions/0002-llm-client-abstraction.md) | — |
 | See what a real Claude Code run proved, and what is still unverified | [acceptance 2026-09-05](reference/acceptance-2026-09-05.md) | — |
 | Add a worker tool or change what the main agent can do | [ARCHITECTURE.md](../ARCHITECTURE.md) codemap | `backend/app/runs.py` (`_main_tools` / `_room_tools`) |

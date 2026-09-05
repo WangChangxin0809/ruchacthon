@@ -20,7 +20,7 @@ waits on. Everything is persisted in one SQLite file with an ordered event
 log, so a browser reconnects with `since=<seq>` and a server restart tells the
 truth about which runs died.
 
-Ideas borrowed, code not copied (docs/decisions/0003): Agent Orchestrator
+Ideas borrowed, and since docs/decisions/0004 code copied with attribution: Agent Orchestrator
 (orchestrator-plus-workers, board from run facts), DeepSeek Harness (task
 board with write-scope overlap warnings), AgentRoom arXiv 2608.23740 (claims,
 escalation to a human at the team boundary), CC Switch (provider profiles as

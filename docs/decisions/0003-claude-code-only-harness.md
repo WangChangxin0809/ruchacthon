@@ -50,7 +50,9 @@ Probe results (scratch script, real `claude` binary, 2026-09-05):
 and do not claim it lapsed. What this decision does: depend on the official
 SDK as a package (like FastAPI), write all application code here, and copy
 nothing from `deepseek-harness` or `agent-orchestrator` — ideas only, credited
-in `ARCHITECTURE.md`. If the rule forbids even package dependencies on
+in `ARCHITECTURE.md`. *Amended by 0004 (2026-09-05): the milestone owner chose
+to copy code from the references where they already solved a problem; 0004
+lists what was copied and under which licence.* If the rule forbids even package dependencies on
 pre-existing SDKs, the SDK is a thin layer over `claude --output-format
 stream-json` and `cc_runner.py` is the one file to swap.
 
