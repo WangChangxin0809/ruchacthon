@@ -61,5 +61,6 @@ rather than waiting for CI, because that is how often the cost is paid.
 | Add a provider path | [ARCHITECTURE.md](../ARCHITECTURE.md) invariant 5 | `backend/app/providers.py` (`KINDS`, `env_for`) |
 | Reach the Aliyun server | [connect-to-aliyun-server](how-to/connect-to-aliyun-server.md) | — |
 | Deploy the workbench to the server | [deploy-aliyun](how-to/deploy-aliyun.md) | `scripts/deploy/` |
+| Look at Agent Orchestrator side by side | [compare-with-ao](how-to/compare-with-ao.md) | `scripts/deploy/ao-compare.sh` |
 | See what is in flight | [cc-workbench plan](exec-plans/cc-workbench/README.md), [tech debt](exec-plans/tech-debt-tracker.md) | — |
 | Deploy / SSH into the server | [connect to aliyun server](how-to/connect-to-aliyun-server.md) | — |
