@@ -7,6 +7,11 @@ import { defineConfig } from 'vite'
 // plain localhost (where it's unset, so `base` stays "/").
 const appBase = process.env.CHEESE_APP_BASE || '/'
 
+// Plain localhost for `npm run dev` on a laptop; `backend` (the
+// docker-compose service name) inside a container, where the backend isn't
+// reachable at 127.0.0.1 -- each container has its own loopback.
+const backendHost = process.env.BACKEND_HOST || '127.0.0.1'
+
 // Proxied so the browser only ever talks to this one origin -- the tunnel
 // exposes exactly one port, and a bare `http://localhost:8787` from the
 // frontend would resolve to the *viewer's* machine, not this sandbox.
@@ -22,12 +27,12 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       [`${appBase.replace(/\/$/, '')}/api`]: {
-        target: 'http://127.0.0.1:8787',
+        target: `http://${backendHost}:8787`,
         changeOrigin: true,
         rewrite: (path) => path.replace(appBase.replace(/\/$/, ''), ''),
       },
       [`${appBase.replace(/\/$/, '')}/ws`]: {
-        target: 'ws://127.0.0.1:8787',
+        target: `ws://${backendHost}:8787`,
         ws: true,
         rewrite: (path) => path.replace(appBase.replace(/\/$/, ''), ''),
       },

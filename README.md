@@ -11,7 +11,21 @@ has actually decided.
 - **Does not cover**: how to work *on* it (CONTRIBUTING.md), how the pieces fit
   (ARCHITECTURE.md), how to perform a task (docs/how-to/).
 
-## 5 分钟跑起来（中文版，照抄命令就行）
+## 用 Docker 跑（最省事，装了 Docker 就一条命令）
+
+```bash
+docker compose up --build
+```
+
+打开 `http://localhost:5173` 就行，前后端都在容器里，不用自己装 Python/Node 依赖。
+想接真实模型，起之前先 `export LLM_PROVIDER=... LLM_API_KEY=...`（跟下面「接真实模型」
+那节一样的变量，`docker compose up` 会自动带进容器）。停止用 `Ctrl+C`，再
+`docker compose down` 清理。Agent 用 `write_file` 改的文件会直接出现在你本地这份代码
+里（`git status` 能看到），不是关起来改了看不见。
+
+没有 Docker，或者想更细地控制两个服务，往下看手动跑的方式。
+
+## 5 分钟跑起来（不用 Docker，手动跑，照抄命令就行）
 
 需要两个终端窗口——一个跑后端，一个跑前端，两个都要一直开着。
 
@@ -75,6 +89,7 @@ python3 -m uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8787
 - **`pip install` 报错、装不上依赖**：如果是因为连不上 apt/Debian 的源，见 [backend/README.md](backend/README.md) 里绕开 apt 直接装的办法。
 - **前端 `npm install` 卡住或报错**：需要 Node 20+；如果 `npm run build` 时报 rolldown 相关的原生模块找不到，见 [frontend/README.md](frontend/README.md)。
 - **看板打不开、显示空白**：先确认终端 1 和终端 2 都还在跑（没报错退出），再检查浏览器地址是不是 `http://localhost:5173`（不是 8787，8787 是后端接口，不是给人看的页面）。
+- **`docker compose up` 报端口冲突**：说明本机已经用手动方式起过一份（还在跑的 `uvicorn`/`npm run dev`），两种方式二选一，先停掉其中一个。
 
 ## Quick start (English, condensed)
 
