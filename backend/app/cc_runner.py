@@ -40,6 +40,7 @@ class RunSpec:
     permission_mode: str = "bypassPermissions"
     hooks: dict[str, list[HookMatcher]] = field(default_factory=dict)
     add_dirs: list[str] = field(default_factory=list)
+    effort: str | None = None
 
 
 @dataclass
@@ -91,6 +92,7 @@ class CCRun:
             max_turns=s.max_turns, max_budget_usd=s.max_budget_usd, setting_sources=s.setting_sources,  # type: ignore[arg-type]
             permission_mode=s.permission_mode,  # type: ignore[arg-type]
             include_partial_messages=True, hooks=s.hooks or None, add_dirs=s.add_dirs,
+            effort=s.effort,  # type: ignore[arg-type]
             stderr=self._on_stderr,
         )
 

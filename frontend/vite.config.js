@@ -11,6 +11,10 @@ const appBase = process.env.CHEESE_APP_BASE || '/'
 // docker-compose service name) inside a container, where the backend isn't
 // reachable at 127.0.0.1 -- each container has its own loopback.
 const backendHost = process.env.BACKEND_HOST || '127.0.0.1'
+// BACKEND_PORT lets a dev run point /api at a mock or a second backend;
+// BACKEND_WS_PORT splits /ws off when the mock does not speak WebSocket.
+const backendPort = process.env.BACKEND_PORT || '8787'
+const wsPort = process.env.BACKEND_WS_PORT || backendPort
 
 // Proxied so the browser only ever talks to this one origin -- the tunnel
 // exposes exactly one port, and a bare `http://localhost:8787` from the
@@ -27,12 +31,12 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       [`${appBase.replace(/\/$/, '')}/api`]: {
-        target: `http://${backendHost}:8787`,
+        target: `http://${backendHost}:${backendPort}`,
         changeOrigin: true,
         rewrite: (path) => path.replace(appBase.replace(/\/$/, ''), ''),
       },
       [`${appBase.replace(/\/$/, '')}/ws`]: {
-        target: `ws://${backendHost}:8787`,
+        target: `ws://${backendHost}:${wsPort}`,
         ws: true,
         rewrite: (path) => path.replace(appBase.replace(/\/$/, ''), ''),
       },

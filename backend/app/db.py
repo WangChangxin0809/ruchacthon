@@ -112,6 +112,14 @@ CREATE TABLE IF NOT EXISTS notifications (
   id TEXT PRIMARY KEY, user_id TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '',
   link TEXT, conversation_id TEXT, project_id TEXT, actor_id TEXT, read_at TEXT, created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS notifications_inbox ON notifications(user_id, read_at, created_at);
+CREATE TABLE IF NOT EXISTS agent_definitions (
+  id TEXT PRIMARY KEY, team_id TEXT, owner_id TEXT, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+  trust TEXT NOT NULL DEFAULT 'user', is_default INTEGER NOT NULL DEFAULT 0, role TEXT NOT NULL DEFAULT 'worker',
+  prompt_role TEXT NOT NULL DEFAULT 'worker', system_prompt TEXT NOT NULL DEFAULT '',
+  allowed_tools TEXT NOT NULL DEFAULT '[]', disallowed_tools TEXT NOT NULL DEFAULT '[]', mcp_servers TEXT NOT NULL DEFAULT '[]',
+  model TEXT, permission_mode TEXT NOT NULL DEFAULT 'acceptEdits', max_turns INTEGER, max_budget_usd REAL,
+  can_spawn INTEGER NOT NULL DEFAULT 0, effort TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS agent_definitions_team ON agent_definitions(team_id, role);
 """
 
 # Columns added after the first release: (table, column, DDL type/default).
@@ -136,25 +144,40 @@ MIGRATIONS = [
     ("provider_profiles", "owner_id", "TEXT"),
     ("provider_profiles", "team_id", "TEXT"),
     ("provider_profiles", "shared", "INTEGER NOT NULL DEFAULT 0"),
+    # agent definitions (docs/decisions/0006): which definition a session is bound to, which one a run actually used
+    ("sessions", "agent_definition_id", "TEXT"),
+    ("runs", "agent_definition_id", "TEXT"),
+    ("messages", "meta", "TEXT NOT NULL DEFAULT '{}'"),
 ]
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def migrate_data(db: "Database") -> None:
-    """Idempotent data migration, keyed by settings.schema_version. v2: every
-    legacy chat channel and session gets a conversation row (channels keep
-    their ch_ id, so chat_messages.channel_id needs no rewrite), every session
-    gets its agent as a member, and sessions learn the name people @ them by."""
-    if int(db.setting("schema_version", 1) or 1) >= SCHEMA_VERSION:
+    """Idempotent data migration, keyed by settings.schema_version, one block
+    per version so a database skips straight to the current one.
+    v2: every legacy chat channel and session gets a conversation row
+    (channels keep their ch_ id, so chat_messages.channel_id needs no
+    rewrite), every session gets its agent as a member, and sessions learn
+    the name people @ them by.
+    v3: the four built-in agent definitions exist and every session is bound
+    to one (main -> orchestrator, worker -> worker)."""
+    have = int(db.setting("schema_version", 1) or 1)
+    if have >= SCHEMA_VERSION:
         return
-    db.execute("INSERT OR IGNORE INTO conversations (id, kind, title, owner_id, is_default, created_at, updated_at) "
-               "SELECT id, 'group', name, NULL, CASE WHEN name = '全员' THEN 1 ELSE 0 END, created_at, created_at FROM chat_channels")
-    db.execute("INSERT OR IGNORE INTO conversations (id, kind, project_id, session_id, title, created_at, updated_at) "
-               "SELECT 'conv_' || substr(id, 5), 'session', project_id, id, title, created_at, created_at FROM sessions")
-    db.execute("INSERT OR IGNORE INTO conversation_members (conversation_id, member_kind, member_id, role, joined_at) "
-               "SELECT c.id, 'agent', s.id, 'agent', s.created_at FROM sessions s JOIN conversations c ON c.session_id = s.id")
-    db.execute("UPDATE sessions SET agent_name = CASE kind WHEN 'main' THEN '主 agent' ELSE title END WHERE agent_name IS NULL")
+    if have < 2:
+        db.execute("INSERT OR IGNORE INTO conversations (id, kind, title, owner_id, is_default, created_at, updated_at) "
+                   "SELECT id, 'group', name, NULL, CASE WHEN name = '全员' THEN 1 ELSE 0 END, created_at, created_at FROM chat_channels")
+        db.execute("INSERT OR IGNORE INTO conversations (id, kind, project_id, session_id, title, created_at, updated_at) "
+                   "SELECT 'conv_' || substr(id, 5), 'session', project_id, id, title, created_at, created_at FROM sessions")
+        db.execute("INSERT OR IGNORE INTO conversation_members (conversation_id, member_kind, member_id, role, joined_at) "
+                   "SELECT c.id, 'agent', s.id, 'agent', s.created_at FROM sessions s JOIN conversations c ON c.session_id = s.id")
+        db.execute("UPDATE sessions SET agent_name = CASE kind WHEN 'main' THEN '主 agent' ELSE title END WHERE agent_name IS NULL")
+    if have < 3:
+        from .agents import seed_builtins     # agents.py imports this module; the seed itself is plain SQL
+        seed_builtins(db)
+        db.execute("UPDATE sessions SET agent_definition_id = CASE kind WHEN 'main' THEN 'orchestrator' ELSE 'worker' END "
+                   "WHERE agent_definition_id IS NULL")
     db.set_setting("schema_version", SCHEMA_VERSION)
 
 
@@ -238,7 +261,8 @@ class Database:
             self._conn.close()
 
 
-JSON_COLUMNS = {"blocks", "payload", "meta", "profile_snapshot", "extra_env", "compat", "depends_on", "subject", "models", "prefs"}
+JSON_COLUMNS = {"blocks", "payload", "meta", "profile_snapshot", "extra_env", "compat", "depends_on", "subject", "models", "prefs",
+                "allowed_tools", "disallowed_tools", "mcp_servers", "link"}
 
 
 def _enc(v: Any) -> Any:

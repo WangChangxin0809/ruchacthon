@@ -24,7 +24,7 @@ os.environ["WORKBENCH_DATA_DIR"] = os.path.join(TMP, "data")
 
 from app.artifacts import ArtifactStore  # noqa: E402
 from app.auth import Auth, bearer_of, hash_password, verify_password  # noqa: E402
-from app.db import Database, new_id, now  # noqa: E402
+from app.db import SCHEMA_VERSION, Database, new_id, now  # noqa: E402
 from app.events import EventBus  # noqa: E402
 from app.notifications import Notifier  # noqa: E402
 from app.teams import Teams, agent_mentioned, event_visible, should_run  # noqa: E402
@@ -480,7 +480,7 @@ def old_schema_migration() -> None:
     c.close()
     for _ in range(2):
         db = Database(path)
-        assert db.setting("schema_version") == 2
+        assert db.setting("schema_version") == SCHEMA_VERSION
         assert len(db.all("SELECT * FROM chat_messages")) == 2 and len(db.all("SELECT * FROM messages")) == 2
         convs = db.all("SELECT * FROM conversations ORDER BY id")
         assert {c_["id"] for c_ in convs} == {"ch_all", "ch_dev", "conv_main1", "conv_w1"}, convs

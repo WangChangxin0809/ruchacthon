@@ -25,21 +25,22 @@ TOOL_CATALOG: dict[str, str] = {
     "list_workers": "list worker tasks in this project with their real status, review state and merge state.",
     "list_agents": "list every agent in this project: name, kind, task, status, activity, branch.",
     "list_sessions": "list every agent session in this project; include_terminated shows finished ones.",
-    "get_session": "inspect one session's details.",
+    "get_session": "inspect one session: its state and its last messages.",
     "message_worker": "send a message to a worker by task id (delivered into its session; starts a new run if it finished).",
-    "message_agent": "send a directed message to an agent: target is a task id, or 'main' for the orchestrator.",
-    "send_message": "send a directed message to an agent: target is a task id, or 'main' for the orchestrator.",
+    "message_agent": "send a directed message to an agent: to is a session id, a task id, an agent's name, or 'main' for the orchestrator.",
+    "send_message": "send a directed message to an agent: to is a session id, a task id, an agent's name, or 'main' for the orchestrator.",
     "cancel_worker": "cancel a worker's current run.",
     "kill_session": "terminate a session.",
     "rename_session": "rename a session's display title.",
     "worker_transcript": "read the last messages of a worker's session.",
     "submit_artifact": "show the human a result: kind markdown|image|html|file|diff, with a title.",
-    "ask_human": "put a question to the humans in this session; the task shows as needs_input until someone answers.",
+    "ask_human": "put a question (optionally with options to pick from) to the people in this session, then END YOUR TURN: "
+                 "the answer arrives as the next human message, and the task shows as needs_input until it does.",
     "room_claim": "claim a file or directory (workspace-relative) before editing it; the lease renews on every tool call.",
     "room_release": "release your claim on a path, or all your claims.",
     "room_state": "who is working on what: active claims, overlaps, pending human decisions.",
     "room_broadcast": "tell every other agent something (they read it from their inbox).",
-    "room_inbox": "read messages addressed to you or broadcast to everyone.",
+    "room_inbox": "read messages addressed to you or broadcast to everyone; pass the next_since it returned last time to read only what is new.",
     "room_handoff": "hand a path you own to another task with a note.",
     "start_devserver": "start a dev server the human can open (port, health and logs are managed); returns its URL.",
 }
@@ -230,7 +231,8 @@ def build_system_prompt(role: str, *, project_name: str, project_root: str, main
                             f"An orchestrator session exists for this project (session {main_session_id}).")
     sections = [_restrict_tools(body, have)]
     if have:
-        sections.append("## Available Tools\n\n" + "\n".join(f"- {t}: {TOOL_CATALOG[t]}" for t in have))
+        sections.append("## Available Tools\n\nMCP tools of this session; the runtime exposes each as mcp__<server>__<name>.\n\n"
+                        + "\n".join(f"- {t}: {TOOL_CATALOG[t]}" for t in have))
     sections.append(MULTI_HUMAN_NOTE)
     sections.append(PROMPT_GUARD)
     if extra.strip():

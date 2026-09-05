@@ -59,12 +59,40 @@ class Room:
     # ---- identity ----------------------------------------------------------
     def identity(self, run: dict) -> dict:
         task = self.db.one("SELECT id, title FROM tasks WHERE id = ?", [run["task_id"]]) if run["task_id"] else None
-        ses = self.db.one("SELECT agent_name, title FROM sessions WHERE id = ?", [run["session_id"]]) or {}
+        ses = self.db.one("SELECT agent_name, title, agent_definition_id FROM sessions WHERE id = ?", [run["session_id"]]) or {}
         conv = self.db.one("SELECT id FROM conversations WHERE session_id = ?", [run["session_id"]])
         return {"run_id": run["id"], "task_id": run["task_id"], "task_title": task["title"] if task else run["kind"],
                 "workspace_id": run["workspace_id"], "kind": run["kind"], "session_id": run["session_id"],
                 "conversation_id": conv["id"] if conv else None, "agent_name": ses.get("agent_name") or ses.get("title"),
-                "created_by": run.get("created_by")}
+                "agent_definition_id": ses.get("agent_definition_id"),
+                "created_by": run.get("created_by"), "owner": self.owner_of(run)}
+
+    def owner_of(self, run: dict) -> dict | None:
+        """The person whose agent this is (ADR 0004 §3.1 owner dimension): the
+        run's creator, falling back to the task's, so the decision card can
+        say who is involved rather than which run id."""
+        uid = run.get("created_by")
+        if not uid and run.get("task_id"):
+            t = self.db.one("SELECT created_by FROM tasks WHERE id = ?", [run["task_id"]])
+            uid = t["created_by"] if t else None
+        return self.db.one("SELECT id, handle, display_name FROM users WHERE id = ?", [uid]) if uid else None
+
+    @staticmethod
+    def tier(a: dict | None, b: dict | None) -> str:
+        """`person`: both agents belong to one person (they can sort it out
+        themselves); `team`: two people's agents. Same-workspace conflicts
+        escalate in both tiers (hard rule 1); the tier only tells the humans
+        whose call it is."""
+        return "person" if a and b and a["id"] == b["id"] else "team"
+
+    def risk_summary(self, path: str, requester: dict, holder: dict, same_workspace: bool) -> str:
+        def who(i: dict) -> str:
+            o = i.get("owner")
+            return f"「{i['task_title']}」（{o['display_name']}）" if o else f"「{i['task_title']}」"
+        where = "在同一个工作区" if same_workspace else "在各自的工作区"
+        tier = self.tier(requester.get("owner"), holder.get("owner"))
+        tail = "同一个人的两个 agent" if tier == "person" else "两个人的 agent"
+        return f"{who(requester)} 和 {who(holder)} {where}都要改 {path}：{tail}，" + ("需要人裁决谁先改。" if same_workspace else "合并时会冲突。")
 
     # ---- claims ------------------------------------------------------------
     def active_claims(self, project_id: str) -> list[dict]:
@@ -114,8 +142,11 @@ class Room:
         if pending:
             return {"ok": False, "conflict": True, "decision_id": pending["id"], "status": "pending",
                     "message": "a human decision on this conflict is still pending; wait for it (it will arrive as a message)"}
-        subject = {"path": path, "requester": self.identity(run), "holder": self.identity(self.db.one("SELECT * FROM runs WHERE id = ?", [holder["run_id"]])),
-                   "holder_claim_id": holder["id"], "note": note}
+        requester, holder_id = self.identity(run), self.identity(self.db.one("SELECT * FROM runs WHERE id = ?", [holder["run_id"]]))
+        subject = {"path": path, "requester": requester, "holder": holder_id, "holder_claim_id": holder["id"], "note": note,
+                   "requester_owner": requester["owner"], "holder_owner": holder_id["owner"],
+                   "tier": self.tier(requester["owner"], holder_id["owner"]),
+                   "risk_summary": self.risk_summary(path, requester, holder_id, same_workspace=True)}
         d = self.db.insert("decisions", {"id": new_id("dec"), "project_id": run["project_id"], "subject_kind": "claim_conflict",
                                          "subject": subject, "status": "pending", "blocked_run_id": run["id"], "created_at": now()})
         self.bus.emit("decision", d, project_id=run["project_id"], task_id=run["task_id"], run_id=run["id"])
@@ -250,8 +281,15 @@ class Room:
         pending = self.db.all("SELECT * FROM decisions WHERE project_id = ? AND status = 'pending' ORDER BY created_at", [project_id])
         msgs = self.db.all("SELECT * FROM room_messages WHERE project_id = ? ORDER BY created_at DESC LIMIT 100", [project_id])
         overlaps_ = []
+        owners: dict[str, dict | None] = {}
         for i, a in enumerate(claims):
             for b in claims[i + 1:]:
                 if a["run_id"] != b["run_id"] and overlaps(a["path"], b["path"]):
-                    overlaps_.append({"a": a, "b": b, "same_workspace": a["workspace_id"] == b["workspace_id"]})
+                    for c in (a, b):
+                        if c["run_id"] not in owners:
+                            r = self.db.one("SELECT * FROM runs WHERE id = ?", [c["run_id"]])
+                            owners[c["run_id"]] = self.owner_of(r) if r else None
+                    overlaps_.append({"a": a, "b": b, "same_workspace": a["workspace_id"] == b["workspace_id"],
+                                      "a_owner": owners[a["run_id"]], "b_owner": owners[b["run_id"]],
+                                      "tier": self.tier(owners[a["run_id"]], owners[b["run_id"]])})
         return {"claims": claims, "pending_decisions": pending, "messages": msgs, "overlaps": overlaps_}

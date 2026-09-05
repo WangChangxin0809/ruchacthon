@@ -355,6 +355,22 @@ class Teams:
             raise HTTPException(403, NOT_MEMBER)
         return conv
 
+    def agent_may_reach(self, user_id: str | None, session: dict) -> bool:
+        """May a run created by `user_id` act on `session` (message it, read
+        it, kill it)? The agent inherits its creator's reach: a member of the
+        session's conversation, or any team member for the project's main
+        session, which is the project's public room."""
+        conv = self.conv_of_session(session["id"])
+        if conv is None:                      # legacy session without a conversation: open
+            return True
+        user = self.user(user_id)
+        if not user:
+            return False
+        if session["kind"] == "main":
+            project = self.db.one("SELECT team_id FROM projects WHERE id = ?", [session["project_id"]]) or {}
+            return self.project_visible(user, project)
+        return self.is_member(user, conv["id"])
+
     def visible_sessions(self, user: dict) -> set[str]:
         if user.get("is_admin"):
             return {r["id"] for r in self.db.all("SELECT id FROM sessions")}

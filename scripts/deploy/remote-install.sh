@@ -36,6 +36,21 @@ WantedBy=multi-user.target
 UNIT
 systemctl daemon-reload
 systemctl enable workbench >/dev/null 2>&1 || true
+# Every deploy may migrate the schema (db.py MIGRATIONS + SCHEMA_VERSION), so
+# checkpoint the WAL and keep a copy of the database first; the rehearsal in
+# docs/how-to/deploy-aliyun.md step 3b works on such a copy. Kept forever: they
+# are small and a failed migration is the one case where they are priceless.
+mkdir -p /var/lib/workbench/backups
+if [ -f /var/lib/workbench/workbench.db ]; then
+  /opt/workbench-venv/bin/python - <<'PY'
+import shutil, sqlite3, time
+db = '/var/lib/workbench/workbench.db'
+sqlite3.connect(db).execute('PRAGMA wal_checkpoint(TRUNCATE)')
+dst = f'/var/lib/workbench/backups/workbench-{time.strftime("%Y%m%d-%H%M%S")}.db'
+shutil.copy2(db, dst)
+print('database backup:', dst)
+PY
+fi
 systemctl restart workbench
 sleep 4
 echo "service: $(systemctl is-active workbench)"

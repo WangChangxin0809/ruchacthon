@@ -3,27 +3,72 @@
 @tailwind utilities;
 
 /* Light, quiet surface in the spirit of Agent Orchestrator: white panels on a
-   grey ground, one black primary button, colour reserved for status. */
+   grey ground, one black primary button, colour reserved for status.
+   Scale: 13px body / 12px meta / 11px labels; spacing 4-8-12-16. */
 :root {
-  --bg: #f4f4f6; --panel: #ffffff; --border: #e5e7eb; --subtle: #f2f2f5; --hover: #ececf0;
-  --text: #16181d; --muted: #6b7280; --faint: #9ca3af; --accent: #111318;
+  --bg: #f4f4f6; --panel: #ffffff; --border: #e5e7eb; --border-strong: #d1d5db; --subtle: #f2f2f5; --hover: #ececf0;
+  --text: #16181d; --muted: #6b7280; --faint: #9ca3af; --accent: #111318; --accent-weak: #e8e9ee; --link: #2563eb;
   --working: #2563eb; --needs: #dc2626; --review: #ea580c; --ready: #16a34a; --idle: #9ca3af; --merged: #7c3aed; --validating: #d97706;
+  --agent: #ea580c; --ring: rgba(17, 19, 24, 0.18);
+  --shadow-sm: 0 1px 2px rgba(16, 18, 24, 0.05); --shadow-md: 0 6px 20px -8px rgba(16, 18, 24, 0.18), 0 1px 3px rgba(16, 18, 24, 0.06);
+  --shadow-lg: 0 24px 60px -20px rgba(16, 18, 24, 0.35), 0 2px 8px rgba(16, 18, 24, 0.08);
 }
 html, body, #root { height: 100%; }
-body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px;
-  font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; }
+body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.45;
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased; }
 code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+* { scrollbar-width: thin; scrollbar-color: #d1d5db transparent; }
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; border-radius: 6px; }
+a { color: var(--link); }
+
 @layer components {
-  .btn { @apply inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[13px] font-medium border border-[var(--border)] bg-white text-[var(--text)] hover:bg-[var(--subtle)] disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap; }
-  .btn-primary { @apply bg-[var(--accent)] text-white border-transparent hover:bg-black hover:opacity-90; }
-  .btn-ghost { @apply border-transparent bg-transparent hover:bg-[var(--subtle)]; }
-  .btn-danger { @apply text-red-600 hover:bg-red-50; }
-  .btn-sm { @apply px-2 py-1 text-[12px]; }
-  .input { @apply w-full rounded-md border border-[var(--border)] bg-white px-2.5 py-1.5 text-[13px] text-[var(--text)] placeholder:text-[var(--faint)] focus:outline-none focus:ring-2 focus:ring-gray-200; }
+  .btn { @apply inline-flex items-center justify-center gap-1.5 rounded-md px-2.5 h-8 text-[13px] font-medium border border-[var(--border)] bg-white text-[var(--text)] hover:bg-[var(--subtle)] hover:border-[var(--border-strong)] disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap select-none transition-[background-color,border-color,color,box-shadow,opacity] duration-150; }
+  .btn-primary { @apply bg-[var(--accent)] text-white border-transparent hover:bg-black hover:border-transparent shadow-sm; }
+  .btn-ghost { @apply border-transparent bg-transparent hover:bg-[var(--subtle)] hover:border-transparent; }
+  .btn-danger { @apply text-red-600 hover:bg-red-50 hover:border-red-200; }
+  .btn-sm { @apply px-2 h-7 text-[12px]; }
+  .btn-xs { @apply px-1.5 h-6 text-[11px] gap-1; }
+  .btn-icon { @apply w-8 h-8 p-0; }
+  .btn-icon.btn-sm { @apply w-7 h-7; }
+  .input { @apply w-full rounded-md border border-[var(--border)] bg-white px-2.5 h-8 text-[13px] text-[var(--text)] placeholder:text-[var(--faint)] focus:outline-none focus:border-[var(--border-strong)] focus:ring-2 focus:ring-[var(--ring)] transition-[border-color,box-shadow] duration-150 disabled:bg-[var(--subtle)] disabled:text-[var(--muted)]; }
+  textarea.input { @apply h-auto py-1.5 leading-relaxed; }
+  select.input { @apply pr-7 appearance-none bg-no-repeat; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E"); background-size: 14px; background-position: right 8px center; }
+  .input-error { @apply border-red-400 focus:ring-red-100 focus:border-red-400; }
   .card { @apply bg-white border border-[var(--border)] rounded-lg; }
+  .card-hover { @apply transition-[box-shadow,border-color] duration-150 hover:border-[var(--border-strong)] hover:shadow-[var(--shadow-md)]; }
   .label { @apply text-[11px] uppercase tracking-wide text-[var(--muted)] font-semibold; }
   .row { @apply flex items-center gap-2; }
   .dot { @apply inline-block w-2 h-2 rounded-full shrink-0; }
+  .chip { @apply inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-white px-1.5 h-6 text-[12px] whitespace-nowrap; }
+  .badge { @apply inline-flex items-center rounded px-1.5 h-[18px] text-[11px] font-medium whitespace-nowrap leading-none; }
+  .popover { @apply absolute z-40 bg-white border border-[var(--border)] rounded-lg shadow-[var(--shadow-lg)] text-[13px] animate-pop; }
+  .menu-item { @apply row w-full text-left px-2.5 h-8 rounded-md hover:bg-[var(--subtle)] text-[13px] transition-colors duration-150; }
+  .nav-item { @apply row w-full rounded-md px-2 h-8 text-left text-[13px] hover:bg-[var(--subtle)] transition-colors duration-150; }
+  .nav-item-active { @apply bg-[var(--hover)] font-medium; }
+  .skeleton { @apply rounded-md bg-[var(--subtle)] animate-shimmer; background-image: linear-gradient(90deg, var(--subtle) 0%, #fafafa 50%, var(--subtle) 100%); background-size: 200% 100%; }
+  .kbd { @apply mono text-[11px] border border-[var(--border)] rounded px-1.5 py-0.5 bg-[var(--subtle)] text-[var(--muted)]; }
+  .field-label { @apply block text-[12px] font-medium text-[var(--text)] mb-1; }
+  .hint { @apply text-[12px] text-[var(--muted)]; }
+  .divider { @apply border-t border-[var(--border)]; }
+  .bubble { @apply rounded-2xl px-3.5 py-2 text-[13px] leading-relaxed whitespace-pre-wrap break-words; }
+  .bubble-mine { @apply bg-[var(--accent)] text-white rounded-br-md; }
+  .bubble-theirs { @apply bg-[var(--subtle)] text-[var(--text)] rounded-bl-md; }
 }
 .animate-breathe { animation: breathe 1.6s ease-in-out infinite; }
+.animate-pop { animation: pop 150ms cubic-bezier(.2,.8,.2,1); transform-origin: top; }
+.animate-fade { animation: fade 150ms ease-out; }
+.animate-rise { animation: rise 180ms cubic-bezier(.2,.8,.2,1); }
+.animate-shimmer { animation: shimmer 1.4s linear infinite; }
+.animate-spin-slow { animation: spin 0.9s linear infinite; }
 @keyframes breathe { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+@keyframes pop { from { opacity: 0; transform: translateY(-4px) scale(.98) } to { opacity: 1; transform: none } }
+@keyframes fade { from { opacity: 0 } to { opacity: 1 } }
+@keyframes rise { from { opacity: 0; transform: translateY(8px) scale(.985) } to { opacity: 1; transform: none } }
+@keyframes shimmer { from { background-position: 200% 0 } to { background-position: -200% 0 } }
+@keyframes spin { to { transform: rotate(360deg) } }
