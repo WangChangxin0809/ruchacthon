@@ -212,7 +212,26 @@ export function fmtDay(iso) {
 export function fmtDateTime(iso) { return iso ? new Date(iso).toLocaleString([], { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }) : ""; }
 export function isToday(iso) { return iso && new Date(iso).toDateString() === new Date().toDateString(); }
 export function shortId(id) { return id ? id.slice(-6) : ""; }
-export async function copyText(t) { try { await navigator.clipboard.writeText(t); return true; } catch { return false; } }
+// navigator.clipboard exists only in a secure context, and a self-hosted box
+// is usually plain http on an IP -- so the old textarea + execCommand path is
+// the one that actually runs there, not a legacy fallback.
+export async function copyText(t) {
+  try {
+    if (navigator.clipboard?.writeText) { await navigator.clipboard.writeText(t); return true; }
+  } catch { /* denied or insecure: fall through */ }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = t;
+    ta.setAttribute("readonly", "");
+    ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, t.length);
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    return ok;
+  } catch { return false; }
+}
 
 // Minimal line icons (lucide geometry, hand-trimmed).
 // a className without an explicit width keeps the 16px default, so callers can pass only a colour

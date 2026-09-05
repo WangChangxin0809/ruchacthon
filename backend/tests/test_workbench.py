@@ -629,6 +629,11 @@ def http_tests() -> None:
         inv3 = c.post(f"/api/teams/{team_id}/invites", json={}, headers=H(ta)).json()["invite"]
         m.db.update("invites", inv3["id"], expires_at="2000-01-01T00:00:00")
         assert c.get(f"/api/invites/{inv3['token']}").json()["reason"] == "邀请已过期"
+        # the list has to say which links are dead, or revoking one looks like nothing happened
+        listed = {i["id"]: i for i in c.get(f"/api/teams/{team_id}/invites", headers=H(ta)).json()}
+        assert listed[inv2["id"]]["revoked"] and not listed[inv2["id"]]["valid"]
+        assert listed[inv3["id"]]["reason"] == "邀请已过期" and not listed[inv3["id"]]["revoked"]
+        assert listed[inv["invite"]["id"]]["reason"] == "邀请已用完"
         assert c.post(f"/api/teams/{team_id}/invites", json={}, headers=H(tb)).status_code == 403, "members cannot mint invites"
         assert [n["kind"] for n in c.get("/api/notifications", headers=H(ta)).json()["items"]] == ["invite_accepted"]
 

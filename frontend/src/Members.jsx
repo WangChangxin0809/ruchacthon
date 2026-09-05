@@ -31,12 +31,19 @@ export default function Members({ wb, toast }) {
     catch (e) { toast(e.message, "red"); }
     finally { setBusy(""); }
   };
+  // a revoked link is not a link any more, so it leaves the list; expired or
+  // used-up ones stay, greyed, until somebody clears them
+  const live = invites.filter((iv) => !iv.revoked);
+  const copy = async (url) => {
+    const ok = await copyText(url);
+    toast(ok ? "已复制" : "复制不了，点一下链接再 Ctrl+C", ok ? undefined : "red");
+  };
   const newInvite = async (role) => {
     setBusy("invite");
     try {
       const r = await api.createInvite(teamId, role);
       await load();
-      if (await copyText(r.url)) toast("邀请链接已复制"); else toast("已生成邀请链接");
+      if (await copyText(r.url)) toast("邀请链接已复制"); else toast("已生成邀请链接，点一下它再 Ctrl+C");
     } catch (e) { toast(e.message, "red"); } finally { setBusy(""); }
   };
 
@@ -81,20 +88,22 @@ export default function Members({ wb, toast }) {
             <Button size="sm" disabled={busy === "invite"} onClick={() => newInvite("member")}><I.plus />新建成员邀请</Button>
             <Button size="sm" disabled={busy === "invite"} onClick={() => newInvite("admin")}>管理员邀请</Button>
           </div>
-          <div className="hint mb-2">没有邀请链接的人无法注册。链接可以重复使用，直到你撤销它。</div>
-          {invites.length === 0 && <div className="text-[12px] text-[var(--faint)] border border-dashed border-[var(--border)] rounded-lg py-4 text-center">还没有邀请链接。</div>}
-          {invites.map((iv) => (
-            <div key={iv.id} className="row py-2 border-b border-[var(--border)] last:border-b-0">
+          <div className="hint mb-2">没有邀请链接的人无法注册。链接可以重复使用，直到你撤销它。对方也可以把整条链接粘到注册页的「邀请码」里。</div>
+          {live.length === 0 && <div className="text-[12px] text-[var(--faint)] border border-dashed border-[var(--border)] rounded-lg py-4 text-center">还没有邀请链接。</div>}
+          {live.map((iv) => (
+            <div key={iv.id} className={`row py-2 border-b border-[var(--border)] last:border-b-0 ${iv.valid ? "" : "opacity-60"}`}>
               <I.link className="text-[var(--muted)]" />
               <div className="flex-1 min-w-0">
-                <div className="mono text-[12px] truncate">{iv.url}</div>
+                <input className="mono text-[12px] w-full bg-transparent truncate focus:outline-none" readOnly value={iv.url}
+                  onFocus={(e) => e.target.select()} onClick={(e) => e.target.select()} />
                 <div className="text-[11px] text-[var(--muted)]">
                   {TEAM_ROLE_LABEL[iv.role] || iv.role} · 建于 {fmtRel(iv.created_at)}{iv.uses ? ` · 已用 ${iv.uses} 次` : " · 还没人用过"}
                 </div>
               </div>
-              <Button size="xs" onClick={async () => toast(await copyText(iv.url) ? "已复制" : "复制失败")}><I.copy />复制</Button>
+              {!iv.valid && <Badge tone="neutral">{iv.reason || "不能用了"}</Badge>}
+              {iv.valid && <Button size="xs" onClick={() => copy(iv.url)}><I.copy />复制</Button>}
               <Button size="xs" kind="danger" disabled={busy === iv.id}
-                onClick={() => act(iv.id, () => api.revokeInvite(teamId, iv.id), "已撤销")}>撤销</Button>
+                onClick={() => act(iv.id, () => api.revokeInvite(teamId, iv.id), "已撤销")}>{iv.valid ? "撤销" : "删掉"}</Button>
             </div>
           ))}
         </div>

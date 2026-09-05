@@ -301,7 +301,15 @@ def make_router(svc) -> APIRouter:
     @r.get("/teams/{team_id}/invites")
     def list_invites(team_id: str, request: Request, user: dict = Depends(me)):
         teams.require_team(user, team_id, "admin")
-        return [{**i, "url": f"{_origin(request)}/?invite={i['token']}", "valid": teams.invite_status(i["token"])[1]} for i in teams.list_invites(team_id)]
+        out = []
+        for i in teams.list_invites(team_id):
+            _, ok, why = teams.invite_status(i["token"])
+            # `why` is what the row says about itself: a link that no longer
+            # works has to look different from one that does, or revoking it
+            # looks like nothing happened
+            out.append({**i, "url": f"{_origin(request)}/?invite={i['token']}", "valid": ok, "reason": why,
+                        "revoked": bool(i["revoked_at"])})
+        return out
 
     @r.delete("/teams/{team_id}/invites/{invite_id}")
     def revoke_invite(team_id: str, invite_id: str, user: dict = Depends(me)):
