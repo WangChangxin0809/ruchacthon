@@ -476,7 +476,10 @@ _CARD_KEYS = ("id", "project_id", "title", "kind", "status", "created_by", "bran
 
 def _task_card(view: dict, visible: set[str]) -> dict:
     view["member"] = _session_open(view["session_id"], visible)
-    return view if view["member"] else {k: view.get(k) for k in _CARD_KEYS} | {"member": False}
+    conv = teams.conv_of_session(view["session_id"]) if view.get("session_id") else None
+    view["members"] = [{"id": m["member_id"], "name": m["name"], "handle": m["handle"], "member_kind": m["member_kind"]}
+                       for m in teams.conv_members(conv["id"])] if conv else []
+    return view if view["member"] else {k: view.get(k) for k in (*_CARD_KEYS, "members")} | {"member": False}
 
 
 @app.get("/api/projects/{project_id}/tasks")

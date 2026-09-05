@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "./api";
 
-export default function ProjectDialog({ initialMode = "clone", onClose, onCreated }) {
+export default function ProjectDialog({ initialMode = "clone", teamId, onClose, onCreated }) {
   const [mode, setMode] = useState(initialMode);
   const [gitUrl, setGitUrl] = useState("");
   const [name, setName] = useState("");
@@ -13,7 +13,8 @@ export default function ProjectDialog({ initialMode = "clone", onClose, onCreate
   async function create() {
     setBusy(true); setErr("");
     try {
-      const body = mode === "clone" ? { git_url: gitUrl, name: name || null } : mode === "new" ? { name } : { root_path: path, name: name || null };
+      const base = mode === "clone" ? { git_url: gitUrl, name: name || null } : mode === "new" ? { name } : { root_path: path, name: name || null };
+      const body = { ...base, team_id: teamId || null };
       onCreated(await api.createProject(body));
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   }
@@ -22,6 +23,7 @@ export default function ProjectDialog({ initialMode = "clone", onClose, onCreate
     <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={onClose}>
       <div className="card w-[560px] p-5 shadow-xl space-y-3" onClick={(e) => e.stopPropagation()}>
         <div className="text-[15px] font-semibold">新增项目</div>
+        {!teamId && <div className="text-[11px] text-amber-600">你还没有团队，这个项目只有你自己看得见。</div>}
         <div className="row gap-1">{tab("clone", "克隆 git 仓库")}{tab("new", "新建空项目")}{tab("existing", "服务器上已有目录")}</div>
         {mode === "clone" && (<>
           <input autoFocus className="input" placeholder="https://github.com/org/repo.git 或 git@…" value={gitUrl} onChange={(e) => setGitUrl(e.target.value)} />

@@ -240,12 +240,20 @@ class Database:
         with self._lock:
             return self._conn.execute(sql, tuple(params))
 
+    # The fetch must happen under the same lock as the execute. One connection
+    # is shared by every request thread, and a cursor left un-drained while
+    # another thread executes on that connection reads back a mangled row
+    # (dict(row) raises IndexError) -- rare with one user, routine once a page
+    # fires six requests at once.
     def one(self, sql: str, params: Iterable[Any] = ()) -> dict | None:
-        row = self.execute(sql, params).fetchone()
+        with self._lock:
+            row = self._conn.execute(sql, tuple(params)).fetchone()
         return _row(row) if row else None
 
     def all(self, sql: str, params: Iterable[Any] = ()) -> list[dict]:
-        return [_row(r) for r in self.execute(sql, params).fetchall()]
+        with self._lock:
+            rows = self._conn.execute(sql, tuple(params)).fetchall()
+        return [_row(r) for r in rows]
 
     def insert(self, table: str, row: dict) -> dict:
         cols = ", ".join(row)

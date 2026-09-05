@@ -353,8 +353,41 @@ async def main() -> None:
     assert bus.emit("project", {}, project_id=project["id"])["session_id"] is None
 
     old_schema_migration()
+    concurrent_reads()
     http_tests()
     print("all workbench assertions passed")
+
+
+def concurrent_reads() -> None:
+    """Many threads reading one shared connection at once.
+
+    Every request thread shares a single sqlite connection, so a cursor left
+    un-drained while another thread executes on it hands back a mangled row
+    and dict(row) raises IndexError. The fetch has to happen under the same
+    lock as the execute; this is what proves it does."""
+    import threading
+    db = Database(Path(TMP, "data", "concurrent.db"))
+    for i in range(60):
+        db.execute("INSERT INTO conversation_members (conversation_id, member_kind, member_id, role, joined_at) VALUES (?,?,?,?,?)",
+                   [f"cv{i % 5}", "user", f"u{i}", "member", now()])
+    errors: list[Exception] = []
+
+    def hammer() -> None:
+        try:
+            for _ in range(120):
+                rows = db.all("SELECT * FROM conversation_members ORDER BY member_id")
+                assert len(rows) == 60 and all(r["member_kind"] == "user" for r in rows)
+                assert db.one("SELECT COUNT(*) AS n FROM conversation_members")["n"] == 60
+        except Exception as e:                     # noqa: BLE001 -- reported, not swallowed
+            errors.append(e)
+
+    ts = [threading.Thread(target=hammer) for _ in range(8)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert not errors, errors[:3]
+    db.close()
 
 
 def first_user_race() -> None:

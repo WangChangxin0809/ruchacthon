@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api } from "./api";
 import { Badge, Button, Details, Empty, fmtTime } from "./ui";
 
-export default function Preview({ artifacts, tasks, selectedTaskId, onSelectTask, author }) {
+export default function Preview({ artifacts, tasks, selectedTaskId, onSelectTask }) {
   const list = selectedTaskId ? artifacts.filter((a) => a.task_id === selectedTaskId) : artifacts;
   const [openId, setOpenId] = useState(null);
   const taskTitle = (id) => tasks.find((t) => t.id === id)?.title || "主 agent";
@@ -24,7 +24,7 @@ export default function Preview({ artifacts, tasks, selectedTaskId, onSelectTask
                 : a.kind === "devserver" ? <Badge status={a.available ? "running" : "failed"}>{a.available ? "可用" : "不可用"}</Badge>
                 : <Badge status="in_review">最新</Badge>}
             </button>
-            {open && <ArtifactBody a={a} author={author} />}
+            {open && <ArtifactBody a={a} />}
           </div>
         );
       })}
@@ -32,7 +32,7 @@ export default function Preview({ artifacts, tasks, selectedTaskId, onSelectTask
   );
 }
 
-function ArtifactBody({ a, author }) {
+function ArtifactBody({ a }) {
   const [text, setText] = useState("");
   const [verdict, setVerdict] = useState("comment");
   const [msg, setMsg] = useState("");
@@ -40,7 +40,7 @@ function ArtifactBody({ a, author }) {
   async function send() {
     setMsg("");
     try {
-      const r = await api.feedback(a.id, text, verdict, author);
+      const r = await api.feedback(a.id, text, verdict);
       setMsg(`已送达 worker（${r.delivery.how === "live" ? "追加到正在运行的会话" : "以新一次运行恢复其会话"}）`);
       setText("");
     } catch (e) { setMsg(`失败：${e.message}`); }

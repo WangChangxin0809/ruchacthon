@@ -7,10 +7,10 @@ export const STATUS_LABEL = {
   succeeded: "已完成", pending: "等待中",
 };
 export const LANES = [
-  { key: "building", label: "进行中", color: "var(--working)", statuses: ["running", "queued", "todo"] },
-  { key: "needs_you", label: "需要你", color: "var(--needs)", statuses: ["needs_input", "failed", "interrupted", "exhausted", "cancelled", "changes_requested"] },
-  { key: "review", label: "审阅中", color: "var(--review)", statuses: ["in_review"] },
-  { key: "ready", label: "可合并", color: "var(--ready)", statuses: ["ready_to_merge"] },
+  { key: "building", label: "进行中", color: "var(--working)", statuses: ["running", "queued", "todo"], empty: "没有 worker 在跑" },
+  { key: "needs_you", label: "需要你", color: "var(--needs)", statuses: ["needs_input", "failed", "interrupted", "exhausted", "cancelled", "changes_requested"], empty: "没有等你的事" },
+  { key: "review", label: "审阅中", color: "var(--review)", statuses: ["in_review"], empty: "没有待审阅的改动" },
+  { key: "ready", label: "可合并", color: "var(--ready)", statuses: ["ready_to_merge"], empty: "没有审阅通过待合并的" },
 ];
 export const ARCHIVE_STATUSES = ["done"];
 export function laneOf(status) { return LANES.find((l) => l.statuses.includes(status)) || null; }
