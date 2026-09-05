@@ -112,6 +112,44 @@ Deployed. On the server: `schema_version 3`, the same row counts, 3
 conversations, 4 agent definitions, both sessions bound. `GET /api/auth`
 reports `needs_deploy_token: true` and an anonymous registration is 403.
 
+## What the owner reported, and what it was
+
+Four things the owner hit on the deployed box, all reproduced before being
+fixed:
+
+| Report | What it actually was |
+| --- | --- |
+| 注册要邀请码却没地方填 | The token was only ever read from `?invite=` in the URL. The register tab now has an 邀请码 field taking a whole link or a bare code; the banner also read `team_name` / `inviter_name`, which the server never sends, so it rendered 「undefined」. |
+| 邀请码复制失败 | `navigator.clipboard` exists only in a secure context; the box is plain http on an IP, so the API is undefined there. `copyText` falls back to textarea + `execCommand`, and the link is a selectable input. |
+| 撤销失败 | The DELETE returned 200 and the row was redrawn identically, because the list returns revoked invites too. Revoked links now leave the list; expired or used-up ones grey out with the reason. |
+| 会话里自己的消息没名字没头像 | Own messages skipped the avatar and the name on purpose. In a room with other people that reads as anonymous, and the chat thread already showed both. |
+
+Verified in a headless Chromium with `navigator.clipboard` deleted, which is
+the deployed box's actual shape: create → 已复制, 复制 → 已复制, 撤销 → 已撤销
+and the row count drops.
+
+## Sessions have one owner, and one way in
+
+- 非成员在看板上仍看到 🔒 卡片 (ADR 0004 §2): the Room is project-wide, so
+  hiding the card while the Room still shows the claim that blocks your own
+  task would contradict itself. The card now offers 申请加入, which notifies
+  the session owner once per person; nothing about the session comes back.
+- Model, provider and agent definition are the owner's call. The server
+  refuses a per-message model override, a retry with a profile, and a
+  definition rebind from anyone else, and the composer shows members a lock
+  instead of a picker that would 403.
+
+## The agent chooses the preview
+
+Copied from AO's `ao preview`. The `preview` tool takes a workspace-relative
+file, an http(s) URL, or nothing (the workspace's entry page); everything
+outside the workspace is refused. The session keeps `preview` +
+`preview_revision`, so asking for the same file again still re-navigates.
+`GET /api/sessions/{id}/preview/file` re-confines the path at serve time and
+is the third and last route that accepts `?token=`. Proven end to end on the
+demo database: the tool wrote the row, the pane rendered an HTML report inside
+a sandboxed iframe and a Markdown document through the transcript's renderer.
+
 ## Still unproven
 
 - Two live workers sharing a workspace, Windows, Docker.
