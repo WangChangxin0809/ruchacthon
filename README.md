@@ -41,14 +41,16 @@ npm run dev -- --host 127.0.0.1 --port 5173
 
 打开 `http://localhost:5173`：
 
-1. 左上角输入一个本机项目目录的绝对路径，点「＋」。
-2. 「主 agent 会话」里说话，比如「把 README 里的安装步骤整理一下，另外派一个 worker 给 utils 加单元测试」。
+1. 右上角填你的名字（多人共用时 agent 要知道是谁在说话）。「总览」点「新增项目」：克隆一个 git 仓库、新建空项目，或选服务器上已有的目录。
+2. 「工作」区的「主 agent」里说话，比如「把 README 里的安装步骤整理一下，另外派一个 worker 给 utils 加单元测试」。
    主 agent 可以自己干，也会用 `spawn_worker` 派 worker；worker 出现在左侧任务列表和右侧看板。
 3. 右侧「预览」看 worker 提交的成果（Markdown / 图片 / HTML / 文件 / diff / dev server），
    直接在成果下面写反馈——它会送回那个 worker 的会话；「审阅通过」≠ 合并，合并在「Diff」页单独点。
 4. 底部「Room」默认折叠：成员、认领、路径重叠、待裁决。两个 worker 在同一工作区抢同一个文件时，
    这里会出现一张裁决卡，被挡住的 worker 会等你点。
-5. ⚙ 里管理 **Provider Profile**（按运行注入，不改你的全局 Claude Code 配置）并查看工作台发现的 CC 配置。
+5. ⚙ 设置 → **模型**：像 dsh 一样按提供方加卡片，密钥只写不读，按运行注入，不改全局 Claude Code 配置；
+   输入框下方的模型选择器列出「提供方 ▸ 模型」。设置 → **Claude Code** 看登录状态、粘贴 `claude setup-token` 的令牌。
+6. 「聊天」区是人和人聊的地方（拉群、贴任务链接）；悬停一条消息可「派给 agent」，它会变成一个 worker 任务。
 
 默认所有 worker 用你 Claude Code 登录的模型；想省钱，后端启动前 `export WORKBENCH_MODEL=claude-sonnet-5`。
 并发上限 `WORKBENCH_MAX_CONCURRENT_RUNS`（默认 3）。数据在 `backend/data/`（可用 `WORKBENCH_DATA_DIR` 改）。

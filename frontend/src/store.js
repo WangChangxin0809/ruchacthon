@@ -10,6 +10,7 @@ const LIST_EVENTS = {
   artifact: "artifacts", artifact_feedback: "artifacts", devserver: "artifacts",
   claim: "room", claims_released: "room", claim_expired: "room", decision: "room", room_message: "room", handoff: "room",
   session: "sessions", project: "projects",
+  chat_message: "channels", chat_channel: "channels", cc_status: "cc",
 };
 
 export function useWorkbench() {
@@ -27,17 +28,25 @@ export function useWorkbench() {
   const [runStatus, setRunStatus] = useState({}); // run_id -> latest status payload
   const [wsStatus, setWsStatus] = useState("connecting");
   const [health, setHealth] = useState(null);
+  const [channels, setChannels] = useState([]);
+  const [cc, setCc] = useState(null);
+  const [author, setAuthorState] = useState(() => safeGet("wb.author") || "");
+  const [lastEvent, setLastEvent] = useState(null);
+  const setAuthor = (a) => { setAuthorState(a); safeSet("wb.author", a); };
   const sessionRef = useRef(null);
   sessionRef.current = sessionId;
   const pending = useRef({});
 
   const refetch = useCallback(
     (what) => {
-      if (!projectId && what !== "projects") return;
+      const global = ["projects", "channels", "cc"].includes(what);
+      if (!projectId && !global) return;
       clearTimeout(pending.current[what]);
       pending.current[what] = setTimeout(async () => {
         try {
           if (what === "projects") setProjects(await api.projects());
+          if (what === "channels") setChannels(await api.channels());
+          if (what === "cc") setCc(await api.ccStatus());
           if (what === "tasks") setTasks(await api.tasks(projectId));
           if (what === "artifacts") setArtifacts(await api.artifacts(projectId));
           if (what === "room") setRoom(await api.room(projectId));
@@ -52,17 +61,20 @@ export function useWorkbench() {
 
   useEffect(() => {
     api.health().then(setHealth).catch(() => setHealth({ ok: false }));
-    refetch("projects");
+    ["projects", "channels", "cc"].forEach(refetch);
   }, [refetch]);
 
   useEffect(() => {
-    if (!projectId) return;
-    safeSet("wb.project", projectId);
-    ["tasks", "artifacts", "room", "sessions"].forEach(refetch);
-    api.mainSession(projectId).then((s) => setSessionId((cur) => cur || s.id));
+    if (projectId) {
+      safeSet("wb.project", projectId);
+      ["tasks", "artifacts", "room", "sessions"].forEach(refetch);
+      api.mainSession(projectId).then((s) => setSessionId((cur) => cur || s.id)).catch(() => {});
+    }
+    // one socket for everything; the project filter only narrows project-scoped events
     const close = connectEvents(
       projectId,
       (ev) => {
+        setLastEvent(ev);
         const list = LIST_EVENTS[ev.type];
         if (list) refetch(list);
         if (ev.type === "run_status") {
@@ -94,7 +106,7 @@ export function useWorkbench() {
 
   return {
     projects, projectId, setProjectId, tasks, sessions, artifacts, room, messages, sessionId, setSessionId, streams, runStatus,
-    wsStatus, health, refetch,
+    wsStatus, health, refetch, channels, cc, author, setAuthor, lastEvent,
   };
 }
 

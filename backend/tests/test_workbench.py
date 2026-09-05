@@ -25,6 +25,7 @@ from app.artifacts import ArtifactStore  # noqa: E402
 from app.db import Database, new_id, now  # noqa: E402
 from app.events import EventBus  # noqa: E402
 from app.providers import ProviderProfiles, scrub  # noqa: E402
+from app.secrets_store import SecretStore  # noqa: E402
 from app.room import Room, normalize_path, overlaps  # noqa: E402
 from app.shared_edit import SharedEditor  # noqa: E402
 from app.workspaces import WorkspaceManager  # noqa: E402
@@ -150,18 +151,32 @@ async def main() -> None:
     assert fb["version"] == 2 and db.one("SELECT review_status FROM tasks WHERE id = ?", [r1["task_id"]])["review_status"] == "changes_requested"
 
     # --- providers: env injection and scrubbing, never a secret in a snapshot
-    pp = ProviderProfiles(db)
-    os.environ["WB_T_TOKEN"] = "sk-verysecret-abcdef"
-    prof = pp.create("gw", "anthropic_compatible_gateway", "http://gw.local", "claude-sonnet-5", "WB_T_TOKEN", {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "8000"})
-    env, snap = pp.env_for(pp.get(prof["id"]))
-    assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-verysecret-abcdef" and env["ANTHROPIC_BASE_URL"] == "http://gw.local"
-    assert "sk-verysecret" not in str(snap) and "sk-verysecret" not in str(pp.public(pp.get(prof["id"])))
+    secrets = SecretStore(Path(TMP, "data", "secrets.json"))
+    pp = ProviderProfiles(db, secrets)
+    prof = pp.create("gw", "anthropic_compatible_gateway", base_url="http://gw.local", models=["claude-sonnet-5", "claude-opus-5"],
+                     extra_env={"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "8000"}, secret="sk-verysecret-abcdef")
+    assert prof["credential_set"] and prof["credential_source"] == "store" and prof["model"] == "claude-sonnet-5"
+    assert oct(os.stat(secrets.path).st_mode & 0o777) == "0o600", "secret file must be private"
+    env, snap = pp.env_for(pp.get(prof["id"]), "claude-opus-5")
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-verysecret-abcdef" and env["ANTHROPIC_BASE_URL"] == "http://gw.local" and env["ANTHROPIC_MODEL"] == "claude-opus-5"
+    assert "sk-verysecret" not in str(snap) and "sk-verysecret" not in str(pp.public(pp.get(prof["id"]))) and "sk-verysecret" not in str(pp.list())
     assert scrub("auth failed for sk-verysecret-abcdef", env) == "auth failed for <ANTHROPIC_AUTH_TOKEN>"
+    # env-var fallback still works for a ref that is not in the store
+    os.environ["WB_T_ENV_TOKEN"] = "sk-fromenv-123456"
+    prof2 = pp.create("gw2", "anthropic_api_key", credential_ref="WB_T_ENV_TOKEN")
+    assert prof2["credential_set"] and prof2["credential_source"] == "env"
+    assert pp.env_for(pp.get(prof2["id"]))[0]["ANTHROPIC_API_KEY"] == "sk-fromenv-123456"
+    # the saved Claude Code login token reaches default-profile runs and is shadowed by API-key profiles
+    secrets.set("claude_code.oauth_token", "sk-ant-oat01-login")
+    assert pp.env_for(None)[0]["CLAUDE_CODE_OAUTH_TOKEN"] == "sk-ant-oat01-login"
+    assert pp.env_for(pp.get(prof2["id"]))[0]["CLAUDE_CODE_OAUTH_TOKEN"] == ""
     try:
-        pp.create("bad", "anthropic_api_key", None, None, None, {"API_KEY": "x"})
+        pp.create("bad", "anthropic_api_key", extra_env={"API_KEY": "x"})
         raise AssertionError("secret-looking extra_env must be refused")
     except ValueError:
         pass
+    pp.delete(prof["id"])
+    assert not secrets.is_set("profile.gw"), "deleting a profile deletes its secret"
 
     # --- shared edit (experimental): concurrent whole-file writes converge
     ed = SharedEditor(ws1["path"])

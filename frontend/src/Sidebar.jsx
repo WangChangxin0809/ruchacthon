@@ -1,65 +1,70 @@
 import { useState } from "react";
 import { api } from "./api";
-import { Badge, Button, Empty } from "./ui";
+import { Button, Empty, fmtTime, STATUS_LABEL } from "./ui";
 
-export default function Sidebar({ projects, projectId, setProjectId, tasks, sessions, sessionId, setSessionId, refetch, onOpenSettings }) {
-  const [newPath, setNewPath] = useState("");
-  const [err, setErr] = useState("");
+// AO groups the board by "what you need to do"; the same grouping here so
+// the sidebar and the board never disagree about what needs attention.
+export const GROUPS = [
+  { key: "attention", label: "需要你", statuses: ["needs_input", "failed", "interrupted", "exhausted", "changes_requested", "cancelled"], color: "bg-amber-400" },
+  { key: "working", label: "进行中", statuses: ["running", "queued"], color: "bg-emerald-400" },
+  { key: "review", label: "待审阅", statuses: ["in_review"], color: "bg-violet-400" },
+  { key: "merge", label: "可合并", statuses: ["ready_to_merge"], color: "bg-teal-400" },
+  { key: "done", label: "已合并 / 待开始", statuses: ["done", "todo"], color: "bg-gray-600" },
+];
+export const dotFor = (status) => GROUPS.find((g) => g.statuses.includes(status))?.color || "bg-gray-600";
+
+export default function Sidebar({ projects, projectId, setProjectId, tasks, sessions, sessionId, setSessionId, refetch, onAddProject, selectedTaskId, onSelectTask }) {
   const [showNew, setShowNew] = useState(false);
+  const [q, setQ] = useState("");
   const main = sessions.find((s) => s.kind === "main");
-
-  async function addProject() {
-    setErr("");
-    try {
-      const p = await api.createProject(newPath);
-      setNewPath("");
-      refetch("projects");
-      setProjectId(p.id);
-    } catch (e) { setErr(e.message); }
-  }
+  const visible = q ? tasks.filter((t) => (t.title + " " + (t.branch || "")).toLowerCase().includes(q.toLowerCase())) : tasks;
 
   return (
     <div className="h-full flex flex-col bg-[#0c0e12] border-r border-gray-800">
-      <div className="p-3 border-b border-gray-800">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-xs font-medium text-gray-400">项目</span>
-          <Button kind="ghost" onClick={onOpenSettings} title="Provider / Claude Code 配置">⚙</Button>
-        </div>
-        <select className="w-full bg-gray-900 border border-gray-800 rounded px-2 py-1 text-sm text-gray-200" value={projectId || ""}
+      <div className="p-3 border-b border-gray-800 flex gap-1">
+        <select className="flex-1 min-w-0 bg-gray-900 border border-gray-800 rounded px-2 py-1 text-sm text-gray-200" value={projectId || ""}
           onChange={(e) => { setSessionId(null); setProjectId(e.target.value || null); }}>
           <option value="">— 选择项目 —</option>
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}{p.is_git ? "" : "（非 git）"}</option>)}
         </select>
-        <div className="flex gap-1 mt-2">
-          <input className="flex-1 bg-gray-900 border border-gray-800 rounded px-2 py-1 text-xs text-gray-200" placeholder="添加：本机项目目录的绝对路径"
-            value={newPath} onChange={(e) => setNewPath(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addProject()} />
-          <Button onClick={addProject} disabled={!newPath.trim()}>＋</Button>
-        </div>
-        {err && <div className="text-[11px] text-rose-300 mt-1">{err}</div>}
+        <Button onClick={onAddProject} title="新增项目">＋</Button>
       </div>
 
       {projectId && (
         <>
           <button onClick={() => main && setSessionId(main.id)}
             className={`text-left px-3 py-2 border-b border-gray-800 text-sm ${sessionId === main?.id ? "bg-gray-800 text-white" : "text-gray-300 hover:bg-gray-900"}`}>
-            💬 主 agent 会话
+            <div>🧭 主 agent</div>
+            <div className="text-[10px] text-gray-500">规划、直接干活、派 worker</div>
           </button>
-          <div className="px-3 py-2 flex items-center justify-between">
-            <span className="text-xs font-medium text-gray-400">任务（{tasks.length}）</span>
-            <Button kind="ghost" onClick={() => setShowNew(!showNew)}>＋ 新任务</Button>
+          <div className="px-3 py-2 flex items-center gap-2">
+            <input className="flex-1 min-w-0 bg-gray-900 border border-gray-800 rounded px-2 py-0.5 text-xs text-gray-200" placeholder={`搜索 ${tasks.length} 个任务…`} value={q} onChange={(e) => setQ(e.target.value)} />
+            <Button kind="ghost" onClick={() => setShowNew(!showNew)}>＋ 任务</Button>
           </div>
           {showNew && <NewTask projectId={projectId} onDone={() => { setShowNew(false); refetch("tasks"); }} tasks={tasks} />}
-          <div className="flex-1 overflow-y-auto px-2 pb-2 space-y-1">
-            {tasks.length === 0 && <Empty>还没有任务。在主会话里让 agent 派 worker，或点「新任务」。</Empty>}
-            {[...tasks].reverse().map((t) => (
-              <button key={t.id} onClick={() => t.session_id && setSessionId(t.session_id)}
-                className={`w-full text-left rounded px-2 py-1.5 text-sm ${sessionId && sessionId === t.session_id ? "bg-gray-800 text-white" : "text-gray-300 hover:bg-gray-900"}`}>
-                <div className="flex items-center gap-2">
-                  <span className="truncate flex-1">{t.title}</span>
-                  <Badge status={t.status} />
+          <div className="flex-1 overflow-y-auto px-2 pb-2">
+            {tasks.length === 0 && <Empty>还没有任务。在主 agent 会话里派 worker，或点「＋ 任务」。</Empty>}
+            {GROUPS.map((g) => {
+              const items = visible.filter((t) => g.statuses.includes(t.status));
+              if (!items.length) return null;
+              return (
+                <div key={g.key} className="mb-2">
+                  <div className="text-[10px] text-gray-500 px-2 py-1 uppercase tracking-wide">{g.label} · {items.length}</div>
+                  {items.map((t) => (
+                    <button key={t.id} onClick={() => onSelectTask(t)}
+                      className={`w-full text-left rounded px-2 py-1.5 text-sm ${(sessionId && sessionId === t.session_id) || selectedTaskId === t.id ? "bg-gray-800 text-white" : "text-gray-300 hover:bg-gray-900"}`}>
+                      <div className="flex items-center gap-2">
+                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotFor(t.status)} ${t.status === "running" ? "animate-pulse" : ""}`} />
+                        <span className="truncate flex-1">{t.title}</span>
+                      </div>
+                      <div className="text-[10px] text-gray-500 pl-3.5 truncate">
+                        {STATUS_LABEL[t.status] || t.status}{t.branch ? ` · ${t.branch}` : t.isolation === "main" ? " · 主目录" : ""}{t.latest_run?.ended_at ? ` · ${fmtTime(t.latest_run.ended_at)}` : ""}
+                      </div>
+                    </button>
+                  ))}
                 </div>
-              </button>
-            ))}
+              );
+            })}
           </div>
         </>
       )}

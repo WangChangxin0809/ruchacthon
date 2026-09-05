@@ -97,6 +97,25 @@ def discover(project_root: str | None = None) -> dict:
     return result
 
 
+def auth_status(env: dict | None = None) -> dict:
+    """What `claude` itself says about its login, with the given env on top
+    (so a saved token can be checked without touching the server's login)."""
+    binary = shutil.which("claude")
+    if not binary:
+        return {"logged_in": False, "method": "none", "error": "claude binary not found"}
+    try:
+        full = {**os.environ, **(env or {})}
+        for k in ("CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION"):
+            full.pop(k, None)
+        r = subprocess.run([binary, "auth", "status", "--json"], capture_output=True, text=True, timeout=30, env=full)
+        data = json.loads(r.stdout or "{}")
+        return {"logged_in": bool(data.get("loggedIn")), "method": data.get("authMethod"), "provider": data.get("apiProvider"),
+                "email": data.get("email") or data.get("account", {}).get("email") if isinstance(data.get("account"), dict) else data.get("email"),
+                "subscription": data.get("subscriptionType")}
+    except (OSError, subprocess.TimeoutExpired, ValueError) as e:
+        return {"logged_in": False, "method": "unknown", "error": str(e)[:200]}
+
+
 def _names(d: Path) -> list[str]:
     if not d.is_dir():
         return []

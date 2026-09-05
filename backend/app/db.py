@@ -73,7 +73,21 @@ CREATE TABLE IF NOT EXISTS decisions (
 CREATE TABLE IF NOT EXISTS provider_profiles (
   id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, base_url TEXT, model TEXT,
   credential_env TEXT, extra_env TEXT NOT NULL DEFAULT '{}', compat TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS chat_channels (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_by TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS chat_messages (
+  id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, author TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS chat_messages_channel ON chat_messages(channel_id, created_at);
 """
+
+# Columns added after the first release: (table, column, DDL type/default).
+# CREATE IF NOT EXISTS cannot add them to an existing file, so we ALTER once.
+MIGRATIONS = [
+    ("provider_profiles", "models", "TEXT NOT NULL DEFAULT '[]'"),
+    ("provider_profiles", "credential_ref", "TEXT"),
+    ("provider_profiles", "display_name", "TEXT"),
+]
 
 
 def now() -> str:
@@ -95,6 +109,23 @@ class Database:
         self._conn.execute("PRAGMA foreign_keys=ON")
         with self._lock:
             self._conn.executescript(SCHEMA)
+            for table, col, ddl in MIGRATIONS:
+                have = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
+                if col not in have:
+                    self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+
+    def setting(self, key: str, default: Any = None) -> Any:
+        row = self.one("SELECT value FROM settings WHERE key = ?", [key])
+        if not row:
+            return default
+        try:
+            return json.loads(row["value"])
+        except ValueError:
+            return row["value"]
+
+    def set_setting(self, key: str, value: Any) -> None:
+        self.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                     [key, json.dumps(value, ensure_ascii=False)])
 
     def execute(self, sql: str, params: Iterable[Any] = ()) -> sqlite3.Cursor:
         with self._lock:
@@ -124,7 +155,7 @@ class Database:
             self._conn.close()
 
 
-JSON_COLUMNS = {"blocks", "payload", "meta", "profile_snapshot", "extra_env", "compat", "depends_on", "subject"}
+JSON_COLUMNS = {"blocks", "payload", "meta", "profile_snapshot", "extra_env", "compat", "depends_on", "subject", "models"}
 
 
 def _enc(v: Any) -> Any:

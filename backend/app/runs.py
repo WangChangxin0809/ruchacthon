@@ -28,6 +28,7 @@ from .room import Room
 from .workspaces import WorkspaceManager
 
 MAX_CONCURRENT = int(os.environ.get("WORKBENCH_MAX_CONCURRENT_RUNS", "3"))
+DEFAULT_PROJECTS_DIR = os.environ.get("WORKBENCH_PROJECTS_DIR")
 TERMINAL = {"succeeded", "failed", "cancelled", "exhausted", "interrupted"}
 
 MAIN_SYSTEM = """You are the main agent of a local multi-agent workbench for this project.
@@ -60,9 +61,11 @@ class RunManager:
 
     # ---- creation ----------------------------------------------------------
     def create_run(self, *, project: dict, session: dict, workspace: dict, kind: str, prompt: str,
-                   task_id: str | None, profile_id: str | None) -> dict:
+                   task_id: str | None, profile_id: str | None, model: str | None = None) -> dict:
+        profile_id = profile_id or self.db.setting("default_profile_id") or None
         profile = self.profiles.get(profile_id) if profile_id else None
-        _, snapshot = self.profiles.env_for(profile)
+        model = model or self.db.setting("default_model") or None
+        _, snapshot = self.profiles.env_for(profile, model)
         attempt = 1 + (self.db.one("SELECT COUNT(*) AS n FROM runs WHERE session_id = ?", [session["id"]]) or {"n": 0})["n"]
         run = self.db.insert("runs", {"id": new_id("run"), "project_id": project["id"], "task_id": task_id, "session_id": session["id"],
                                       "workspace_id": workspace["id"], "profile_id": profile["id"] if profile else None,
@@ -142,8 +145,8 @@ class RunManager:
         ws = self.workspaces.get(run["workspace_id"])
         proj = self.db.one("SELECT * FROM projects WHERE id = ?", [run["project_id"]])
         profile = self.profiles.get(run["profile_id"]) if run["profile_id"] else None
-        env, _ = self.profiles.env_for(profile)
-        model = (profile or {}).get("model") or os.environ.get("WORKBENCH_MODEL") or None
+        model = (run.get("profile_snapshot") or {}).get("model") or os.environ.get("WORKBENCH_MODEL") or None
+        env, _ = self.profiles.env_for(profile, model)
         hooks = {"PostToolUse": [HookMatcher(matcher=None, hooks=[self._heartbeat_hook(run)])]}
         if run["kind"] == "main":
             server = self._main_tools(run, proj)
@@ -188,7 +191,7 @@ class RunManager:
         self.bus.emit(type_, payload, **ids)
 
     def _finish(self, run_id: str, cc: CCRun, outcome: RunOutcome) -> None:
-        env, _ = self.profiles.env_for(self.profiles.get(self.db.one("SELECT profile_id FROM runs WHERE id = ?", [run_id])["profile_id"] or ""))
+        env, _ = self.profiles.env_for(self.profiles.get(self.db.one("SELECT profile_id FROM runs WHERE id = ?", [run_id])["profile_id"] or ""), None)
         summary = (outcome.result_text or "")[:4000]
         run = self._set_status(run_id, outcome.status, outcome=outcome.subtype, ended_at=now(), result_summary=summary,
                                error=scrub(outcome.error, env), cost_usd=outcome.cost_usd, num_turns=outcome.num_turns,
@@ -288,7 +291,9 @@ class RunManager:
 
     def task_view(self, task: dict) -> dict:
         run = self.latest_run(task["id"])
+        ws = self.workspaces.get(task["workspace_id"]) if task.get("workspace_id") else None
         return {**task, "status": self.task_status(task["id"]), "latest_run": run,
+                "branch": ws.get("branch") if ws else None, "isolation": ws.get("kind") if ws else None,
                 "session_id": run["session_id"] if run else self._session_for_task(task["id"]),
                 "runs_count": self.db.one("SELECT COUNT(*) AS n FROM runs WHERE task_id = ?", [task["id"]])["n"]}
 

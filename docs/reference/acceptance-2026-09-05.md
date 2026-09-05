@@ -25,6 +25,16 @@ All runs below were made on a scratch git project registered as
 | 10 | No secrets in responses or logs | `extra_env` with a `*_KEY` name refused at create; grep of server log, WS stream and DB for token values: none; unit test asserts snapshot/scrub | `test_workbench.py` providers section |
 | 11 | Review ≠ merge | Approving the review moved the task to `ready_to_merge`; merge was a separate call that produced a `--no-ff` merge in the project repo and `done` on the board | `git log` of the scratch project |
 
+## Round 2 (same day): dashboard, projects, login state, chat, dsh-style config
+
+| # | Requirement | What happened | Evidence |
+|---|---|---|---|
+| 12 | Model chosen in the composer reaches the run | Main-session message sent with `model=claude-haiku-4-5-20251001`; the run's `profile_snapshot.model` is that id and the reply was the requested `PONG` | `run_a76bd47aaf82` |
+| 13 | Projects can be created from the browser | `POST /api/projects {name}` → `git init` under `WORKBENCH_PROJECTS_DIR`; `{git_url}` → clone of `octocat/Hello-World` registered as a project | `prj_4ed843f1528d`, `prj_9b7674851fa4` |
+| 14 | Chat is people-only and live | Channel `前端组` created, message posted, appears via the `chat_message` event; nothing reaches a model unless 「派给 agent」 is used (that path is `POST /api/projects/{id}/tasks`, item 2) | `ch_92316aa420de` |
+| 15 | Secrets are write-only | Profile key saved through `PATCH /api/profiles/{id}{secret}`; `GET /api/profiles` returns only `credential_set`/`credential_source`; the store file is `0600` | `test_workbench.py` secrets section |
+| 16 | Login state is shown, not assumed | `/api/cc/status` runs `claude auth status --json` for the server login and, separately, for a token saved on the settings page; the header dot reflects `effective` | header, 设置 → Claude Code |
+
 ## Not verified (honest list)
 
 - **Real provider paths other than the CC login**: Bedrock, Vertex, Foundry
@@ -46,3 +56,9 @@ All runs below were made on a scratch git project registered as
 - **Windows**: not run on Windows yet.
 - **Docker**: compose files updated but not built.
 - **Task dependencies** (`depends_on`) wait loop: unit-level only.
+- **A saved `CLAUDE_CODE_OAUTH_TOKEN` driving a run on the cloud server**: the
+  server has no Claude Code login yet by the owner's choice; the token path is
+  verified only by `claude auth status` against a saved token, not by a run.
+- **「派给 agent」 from chat with a live model**: the dialog calls the same
+  task-creation endpoint as the sidebar (item 2); the round trip from a chat
+  message to a worker transcript was not run against a model.

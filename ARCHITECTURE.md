@@ -37,7 +37,8 @@ per-run config, never rewriting the user's global CC config).
 | Run | one execution attempt inside a session | `status`, `outcome`, `attempt_no`, `profile_snapshot`, `pid` |
 | Artifact | something a run hands to a human, versioned per task | `kind`, `version`, `status` |
 | Room: Claim / RoomMessage / Decision | who owns which path; overlap/broadcast/handoff; the human's ruling | `expires_at`, `blocked_run_id` |
-| ProviderProfile | which endpoint a run talks to | `kind`, `credential_env` (a name, never a value) |
+| ProviderProfile | which endpoint a run talks to | `kind`, `models`, `credential_ref` (a name in the write-only secret store, never a value) |
+| Channel / ChatMessage | people talking to people; no model reads it | `author`; a message can be handed to the work area as a Task |
 
 Task status on the board is **derived**, never stored: latest run status
 (`queued/running/needs_input/failed/cancelled/interrupted/exhausted`), then
@@ -53,10 +54,10 @@ in `in_review`; only a human moves it past that.
 | `backend/app/room.py` | claims, leases, overlap vs conflict, handoff, decisions | `runs.deliver` |
 | `backend/app/artifacts.py`, `devservers.py` | artifact versions + feedback; managed dev-server processes | `workspaces` |
 | `backend/app/workspaces.py` | worktree / dir workspaces, diff, merge | git |
-| `backend/app/providers.py`, `ccconfig.py` | Provider Profiles + compat check; CC install/config discovery | `cc_runner` (env) |
+| `backend/app/providers.py`, `secrets_store.py`, `ccconfig.py` | Provider Profiles + compat check; write-only 0600 secret store; CC install/config/login discovery | `cc_runner` (env) |
 | `backend/app/shared_edit.py` | EXPERIMENTAL CRDT merge for `Write` in shared-edit workspaces | `runs.py` hooks |
 | `backend/app/db.py`, `events.py`, `main.py` | SQLite schema; seq'd event bus; FastAPI + WebSocket | frontend |
-| `frontend/src/` | React workbench: sidebar, session view, board/preview/diff, Room bar, settings | `/api`, `/ws` |
+| `frontend/src/` | React workbench: 总览 (cross-project board), 工作 (sidebar, session, board/preview/diff, Room bar), 聊天 (people only), dsh-style settings | `/api`, `/ws` |
 | `scripts/gates/check_escalation_decisions.py` | the merge gate: no pending decisions | `workbench.db` |
 
 ## Invariants
@@ -71,8 +72,10 @@ in `in_review`; only a human moves it past that.
    process is gone is `interrupted`, never left `running`.
 4. Tool identity is a closure over the Run (`_room_tools(run)`), so a model
    cannot claim, hand off or submit as anybody else.
-5. Secrets never leave the server process: profiles store env-var *names*,
-   snapshots list keys only, error strings pass through `providers.scrub`.
+5. Secrets never leave the server process: a key entered in the UI goes into
+   the write-only store (`secrets_store.py`, `0600`) and profiles keep only its
+   *name*; the API answers "set / not set", snapshots list keys only, error
+   strings pass through `providers.scrub`.
 6. The event log's `seq` is monotonic and every persisted event is replayable
    from any point; stream deltas are the only unpersisted events.
 

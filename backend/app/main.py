@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -20,12 +21,13 @@ from pydantic import BaseModel
 from . import ccconfig
 from .artifacts import ArtifactStore
 from .cc_runner import CCRun, RunSpec
-from .db import Database, new_id, now
+from .db import DATA_DIR as DATA_DIR_PATH, Database, new_id, now
 from .devservers import DevServerManager
 from .events import EventBus
-from .providers import KINDS as PROVIDER_KINDS, ProviderProfiles, scrub
+from .providers import DEFAULT_MODELS, KINDS as PROVIDER_KINDS, ProviderProfiles, scrub
 from .room import Room
 from .runs import RunManager
+from .secrets_store import SecretStore
 from .workspaces import WorkspaceManager, is_git_repo
 
 db = Database()
@@ -34,7 +36,9 @@ workspaces = WorkspaceManager(db)
 room = Room(db, bus)
 artifacts = ArtifactStore(db, bus, workspaces)
 devservers = DevServerManager(db, bus)
-profiles = ProviderProfiles(db)
+secrets = SecretStore()
+profiles = ProviderProfiles(db, secrets)
+PROJECTS_DIR = Path(os.environ.get("WORKBENCH_PROJECTS_DIR", str(DATA_DIR_PATH / "projects")))
 runs: RunManager  # built in lifespan: it needs the running loop
 
 
@@ -46,6 +50,9 @@ async def lifespan(app: FastAPI):
     recovered = runs.reconcile()
     devservers.reconcile_after_restart()
     workspaces.sweep_orphans()
+    PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+    if not db.one("SELECT id FROM chat_channels LIMIT 1"):
+        db.insert("chat_channels", {"id": new_id("ch"), "name": "全员", "created_by": "system", "created_at": now()})
     bus.emit("server_started", {"recovered_runs": [r["id"] for r in recovered]})
     sweeper = asyncio.get_running_loop().create_task(_sweep())
     try:
@@ -110,6 +117,41 @@ def health():
             "last_seq": bus.last_seq()}
 
 
+@app.get("/api/cc/status")
+def cc_status():
+    """Login state as `claude auth status` reports it, for the server's own
+    login and for the token saved on the settings page (if any)."""
+    server = ccconfig.auth_status()
+    saved = None
+    if secrets.is_set("claude_code.oauth_token"):
+        saved = ccconfig.auth_status({"CLAUDE_CODE_OAUTH_TOKEN": secrets.get("claude_code.oauth_token") or ""})
+    effective = saved if saved and saved.get("logged_in") else server
+    return {"server_login": server, "saved_token": saved, "saved_token_set": saved is not None, "effective": effective}
+
+
+class CcLoginIn(BaseModel):
+    oauth_token: str
+
+
+@app.post("/api/cc/login-token")
+def cc_login_token(body: CcLoginIn):
+    """Save a long-lived Claude Code token (from `claude setup-token`). Write-only."""
+    tok = body.oauth_token.strip()
+    if len(tok) < 20:
+        raise HTTPException(400, "token looks too short")
+    secrets.set("claude_code.oauth_token", tok)
+    status = ccconfig.auth_status({"CLAUDE_CODE_OAUTH_TOKEN": tok})
+    bus.emit("cc_status", status)
+    return {"ok": True, "status": status}
+
+
+@app.delete("/api/cc/login-token")
+def cc_login_token_delete():
+    secrets.delete("claude_code.oauth_token")
+    bus.emit("cc_status", ccconfig.auth_status())
+    return {"ok": True}
+
+
 @app.get("/api/cc/discovery")
 def cc_discovery(project_id: str | None = None):
     root = _get("projects", project_id)["root_path"] if project_id else None
@@ -118,8 +160,9 @@ def cc_discovery(project_id: str | None = None):
 
 # ---- projects -----------------------------------------------------------------
 class ProjectIn(BaseModel):
-    root_path: str
-    name: str | None = None
+    root_path: str | None = None      # an existing directory on this server
+    git_url: str | None = None        # clone into the projects directory
+    name: str | None = None           # with neither: create an empty git project of this name
 
 
 @app.get("/api/projects")
@@ -127,25 +170,152 @@ def list_projects():
     return db.all("SELECT * FROM projects ORDER BY created_at")
 
 
-@app.post("/api/projects")
-def create_project(body: ProjectIn):
-    root = Path(body.root_path).expanduser().resolve()
-    if not root.is_dir():
-        raise HTTPException(400, f"not a directory: {root}")
+@app.get("/api/projects/candidates")
+def project_candidates():
+    """Directories under the projects dir that are not registered yet."""
+    known = {p["root_path"] for p in db.all("SELECT root_path FROM projects")}
+    dirs = sorted(str(p) for p in PROJECTS_DIR.iterdir() if p.is_dir() and not p.name.startswith(".")) if PROJECTS_DIR.is_dir() else []
+    return {"projects_dir": str(PROJECTS_DIR), "candidates": [d for d in dirs if d not in known]}
+
+
+def _register(root: Path, name: str | None) -> dict:
     existing = db.one("SELECT * FROM projects WHERE root_path = ?", [str(root)])
     if existing:
         return existing
-    p = db.insert("projects", {"id": new_id("prj"), "name": body.name or root.name, "root_path": str(root),
+    p = db.insert("projects", {"id": new_id("prj"), "name": name or root.name, "root_path": str(root),
                                "is_git": 1 if is_git_repo(root) else 0, "created_at": now()})
     workspaces.main_workspace(p)
     bus.emit("project", p, project_id=p["id"])
     return p
 
 
+@app.post("/api/projects")
+def create_project(body: ProjectIn):
+    import subprocess
+    if body.root_path:
+        root = Path(body.root_path).expanduser().resolve()
+        if not root.is_dir():
+            raise HTTPException(400, f"这台服务器上没有这个目录：{root}。用「克隆 git 仓库」或「新建项目」。")
+        return _register(root, body.name)
+    PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+    if body.git_url:
+        url = body.git_url.strip()
+        if not re.match(r"^(https?://|git@|ssh://)[^\s]+$", url):
+            raise HTTPException(400, "git 地址格式不对（https://… 或 git@…）")
+        name = body.name or re.sub(r"\.git$", "", url.rstrip("/").split("/")[-1].split(":")[-1])
+        target = PROJECTS_DIR / _safe_dirname(name)
+        if target.exists():
+            return _register(target, body.name)
+        r = subprocess.run(["git", "clone", "--", url, str(target)], capture_output=True, text=True, timeout=600,
+                           env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+        if r.returncode != 0:
+            raise HTTPException(400, f"git clone 失败：{(r.stderr or r.stdout).strip()[-800:]}")
+        return _register(target, body.name)
+    if body.name:
+        target = PROJECTS_DIR / _safe_dirname(body.name)
+        if not target.exists():
+            target.mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(target)], capture_output=True, timeout=60)
+            (target / "README.md").write_text(f"# {body.name}\n")
+            subprocess.run(["git", "-C", str(target), "add", "-A"], capture_output=True, timeout=60)
+            subprocess.run(["git", "-C", str(target), "-c", "user.email=workbench@local", "-c", "user.name=workbench",
+                            "commit", "-qm", "Initial commit"], capture_output=True, timeout=60)
+        return _register(target, body.name)
+    raise HTTPException(400, "需要 root_path、git_url 或 name 之一")
+
+
+def _safe_dirname(name: str) -> str:
+    out = re.sub(r"[^A-Za-z0-9._\u4e00-\u9fff-]+", "-", name.strip()).strip("-.")
+    return out[:64] or "project"
+
+
 @app.get("/api/projects/{project_id}")
 def get_project(project_id: str):
     p = _get("projects", project_id)
     return {**p, "main_workspace": workspaces.main_workspace(p)}
+
+
+@app.get("/api/overview")
+def overview():
+    """Everything across projects, for the landing board."""
+    projs = db.all("SELECT * FROM projects ORDER BY created_at")
+    tasks = [runs.task_view(t) for t in db.all("SELECT * FROM tasks ORDER BY created_at DESC LIMIT 300")]
+    live = db.all("SELECT id, project_id, task_id, session_id, kind, status, started_at FROM runs WHERE status IN ('queued','running') ORDER BY created_at")
+    pending = db.all("SELECT * FROM decisions WHERE status = 'pending' ORDER BY created_at")
+    arts = db.all("SELECT id, project_id, task_id, run_id, kind, title, version, status, created_at FROM artifacts WHERE status = 'current' ORDER BY created_at DESC LIMIT 30")
+    return {"projects": projs, "tasks": tasks, "live_runs": live, "pending_decisions": pending, "recent_artifacts": arts,
+            "counts": {"projects": len(projs), "tasks": len(tasks), "live_runs": len(live), "pending_decisions": len(pending)}}
+
+
+# ---- settings -----------------------------------------------------------------
+class SettingsIn(BaseModel):
+    default_profile_id: str | None = None
+    default_model: str | None = None
+
+
+@app.get("/api/settings")
+def get_settings():
+    return {"default_profile_id": db.setting("default_profile_id"), "default_model": db.setting("default_model"),
+            "max_concurrent_runs": int(os.environ.get("WORKBENCH_MAX_CONCURRENT_RUNS", "3")), "projects_dir": str(PROJECTS_DIR),
+            "data_dir": str(DATA_DIR_PATH), "token_required": bool(TOKEN)}
+
+
+@app.put("/api/settings")
+def put_settings(body: SettingsIn):
+    if body.default_profile_id is not None:
+        db.set_setting("default_profile_id", body.default_profile_id or None)
+    if body.default_model is not None:
+        db.set_setting("default_model", body.default_model or None)
+    return get_settings()
+
+
+# ---- team chat (people talking to people; not a model session) ---------------------
+class ChannelIn(BaseModel):
+    name: str
+    author: str = "human"
+
+
+class ChatIn(BaseModel):
+    text: str
+    author: str = "human"
+
+
+@app.get("/api/chat/channels")
+def chat_channels():
+    rows = db.all("SELECT * FROM chat_channels ORDER BY created_at")
+    for r in rows:
+        last = db.one("SELECT author, text, created_at FROM chat_messages WHERE channel_id = ? ORDER BY created_at DESC LIMIT 1", [r["id"]])
+        r["last"] = last
+    return rows
+
+
+@app.post("/api/chat/channels")
+def chat_create_channel(body: ChannelIn):
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(400, "群名不能为空")
+    if db.one("SELECT id FROM chat_channels WHERE name = ?", [name]):
+        raise HTTPException(409, "已有同名群")
+    ch = db.insert("chat_channels", {"id": new_id("ch"), "name": name, "created_by": body.author, "created_at": now()})
+    bus.emit("chat_channel", ch)
+    return ch
+
+
+@app.get("/api/chat/channels/{channel_id}/messages")
+def chat_messages(channel_id: str, limit: int = 200):
+    _get("chat_channels", channel_id)
+    return db.all("SELECT * FROM chat_messages WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?", [channel_id, limit])[::-1]
+
+
+@app.post("/api/chat/channels/{channel_id}/messages")
+def chat_post(channel_id: str, body: ChatIn):
+    _get("chat_channels", channel_id)
+    if not body.text.strip():
+        raise HTTPException(400, "empty")
+    m = db.insert("chat_messages", {"id": new_id("cm"), "channel_id": channel_id, "author": body.author or "human",
+                                    "text": body.text.strip(), "created_at": now()})
+    bus.emit("chat_message", m)
+    return m
 
 
 # ---- sessions / chat ------------------------------------------------------------
@@ -181,6 +351,7 @@ class MessageIn(BaseModel):
     text: str
     author: str = "human"
     profile_id: str | None = None
+    model: str | None = None
 
 
 @app.post("/api/sessions/{session_id}/messages")
@@ -198,7 +369,8 @@ async def post_message(session_id: str, body: MessageIn):
     msg = db.insert("messages", {"id": new_id("msg"), "session_id": session_id, "run_id": None, "role": "user", "author": body.author,
                                  "blocks": [{"type": "text", "text": body.text}], "created_at": now()})
     bus.emit("message", msg, project_id=p["id"], session_id=session_id)
-    run = runs.create_run(project=p, session=s, workspace=ws, kind=s["kind"], prompt=body.text, task_id=s["task_id"], profile_id=body.profile_id)
+    run = runs.create_run(project=p, session=s, workspace=ws, kind=s["kind"], prompt=body.text, task_id=s["task_id"],
+                          profile_id=body.profile_id, model=body.model)
     return {"ok": True, "how": "new_run", "run_id": run["id"]}
 
 
@@ -406,31 +578,64 @@ def list_decisions(project_id: str):
 
 # ---- provider profiles -----------------------------------------------------------
 class ProfileIn(BaseModel):
-    name: str
+    name: str                         # provider id, lowercase
     kind: str
+    display_name: str | None = None
     base_url: str | None = None
     model: str | None = None
-    credential_env: str | None = None
+    models: list[str] = []
+    credential_ref: str | None = None # env var name; omit to store the key in the secret store
+    secret: str | None = None         # write-only
     extra_env: dict[str, str] = {}
+
+
+class ProfilePatch(BaseModel):
+    display_name: str | None = None
+    base_url: str | None = None
+    model: str | None = None
+    models: list[str] | None = None
+    secret: str | None = None
+    extra_env: dict[str, str] | None = None
 
 
 @app.get("/api/profiles")
 def list_profiles():
-    return {"profiles": profiles.list(), "kinds": PROVIDER_KINDS}
+    return {"profiles": profiles.list(), "kinds": PROVIDER_KINDS, "default_models": DEFAULT_MODELS,
+            "default_profile_id": db.setting("default_profile_id"), "default_model": db.setting("default_model")}
 
 
 @app.post("/api/profiles")
 def create_profile(body: ProfileIn):
     try:
-        return profiles.create(body.name, body.kind, body.base_url, body.model, body.credential_env, body.extra_env)
+        return profiles.create(body.name, body.kind, display_name=body.display_name, base_url=body.base_url, model=body.model,
+                               models=body.models, credential_ref=body.credential_ref, extra_env=body.extra_env, secret=body.secret)
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@app.patch("/api/profiles/{profile_id}")
+def patch_profile(profile_id: str, body: ProfilePatch):
+    _get("provider_profiles", profile_id)
+    try:
+        return profiles.update(profile_id, display_name=body.display_name, base_url=body.base_url, model=body.model, models=body.models,
+                               extra_env=body.extra_env, secret=body.secret)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.delete("/api/profiles/{profile_id}/secret")
+def delete_profile_secret(profile_id: str):
+    _get("provider_profiles", profile_id)
+    profiles.clear_secret(profile_id)
+    return {"ok": True}
 
 
 @app.delete("/api/profiles/{profile_id}")
 def delete_profile(profile_id: str):
     _get("provider_profiles", profile_id)
     profiles.delete(profile_id)
+    if db.setting("default_profile_id") == profile_id:
+        db.set_setting("default_profile_id", None)
     return {"ok": True}
 
 
@@ -442,7 +647,7 @@ async def check_profile(profile_id: str):
     env, snap = profiles.env_for(p)
     result = {"profile": snap, "stream_text": False, "tool_call": False, "ok": False, "error": None, "model": None}
     if snap.get("credential_present") is False:
-        result["error"] = f"credential environment variable {p['credential_env']} is not set in the server process"
+        result["error"] = "没有密钥：在这个提供方的卡片里填入密钥，或在服务器环境里设置它引用的变量"
         profiles.record_compat(profile_id, result)
         return result
     with tempfile.TemporaryDirectory() as tmp:
