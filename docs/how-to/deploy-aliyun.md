@@ -37,12 +37,21 @@ workers on the server. Server access: [connect-to-aliyun-server.md](connect-to-a
    the server.
 
 4. Open TCP 8787 in the Aliyun security group for your IP, then browse to
-   `http://8.140.221.53:8787/`. A fresh instance shows a login screen: the
-   first person to register becomes the administrator and owns `默认团队`
-   (all data from before the upgrade is claimed by that account; if the data
-   dir was last used with `WORKBENCH_SINGLE_USER=1`, that person takes over
-   the `local` account instead). Everyone else joins through an invite link
-   from ⚙ → 团队.
+   `http://8.140.221.53:8787/?token=<WORKBENCH_TOKEN>` — the value is in
+   `/etc/workbench.env` on the server. **The first account needs that token.**
+   A box is reachable from the moment it restarts, so without the gate the
+   first stranger to find the port would become its administrator; the login
+   screen says so and shows the URL to use. On a laptop, where no
+   `WORKBENCH_TOKEN` is set, the first registration stays open.
+
+   That first account becomes the administrator and owns `默认团队`, and all
+   data from before the upgrade is claimed by it (if the data dir was last
+   used with `WORKBENCH_SINGLE_USER=1`, that person takes over the `local`
+   account instead). Everyone else joins through an invite link from
+   ⚙ → 团队.
+
+   Criterion: `curl -s http://<host>:8787/api/auth` on a fresh instance shows
+   `"needs_deploy_token": true`, and a registration without the token is 403.
 
    `WORKBENCH_TOKEN` in `/etc/workbench.env` is now only a *bootstrap* token:
    it can register the first user and call `/api/admin/*` (for example

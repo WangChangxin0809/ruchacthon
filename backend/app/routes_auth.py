@@ -104,8 +104,11 @@ def make_router(svc) -> APIRouter:
     def auth_probe(request: Request):
         """Public: whether a login is needed and whether the caller's token works (also the deploy health check)."""
         u = getattr(request.state, "user", None)
-        return {"required": not auth.single_user, "mode": "users", "registration_open": not auth.single_user and auth.needs_first_user(),
-                "single_user": auth.single_user, "ok": u is not None, "me": public_user(u) if u else None}
+        first = not auth.single_user and auth.needs_first_user()
+        gated = first and bool(auth.bootstrap_token) and not (u or {}).get("bootstrap")
+        return {"required": not auth.single_user, "mode": "users", "registration_open": first and not gated,
+                "needs_deploy_token": gated, "single_user": auth.single_user,
+                "ok": u is not None, "me": public_user(u) if u else None}
 
     @r.post("/auth/register", status_code=201)
     def register(body: RegisterIn, request: Request):
@@ -118,6 +121,14 @@ def make_router(svc) -> APIRouter:
             invite, ok, why = teams.invite_status(body.invite)
             if not ok:
                 raise HTTPException(410 if invite else 404, why)
+        # A deployment that configured WORKBENCH_TOKEN keeps the very first
+        # registration behind it (docs/decisions/0005): otherwise, between the
+        # deploy and the owner getting to a browser, whoever reaches the box
+        # first becomes its administrator. With no token set (the laptop quick
+        # start) the first registration stays open, because nothing else could
+        # open it.
+        if first and auth.bootstrap_token and not (caller or {}).get("bootstrap") and not invite:
+            raise HTTPException(403, "第一个账号需要部署令牌：打开 http://<地址>/?token=<WORKBENCH_TOKEN>（在服务器的 /etc/workbench.env 里）再注册")
         if not (first or invite or by_admin):
             raise HTTPException(403, "注册需要邀请链接；请向团队 owner 要一个")
         try:

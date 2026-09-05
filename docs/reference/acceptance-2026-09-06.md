@@ -50,9 +50,65 @@ OK and this model replies with its reasoning first. The check treats any
 2xx with a body as success, which is right — it is testing reachability, not
 obedience.
 
+## The frontend (batch 2)
+
+Sixteen screens driven through a headless Chromium against a seeded database
+(two users, a team, a DM, a group, a project with five tasks in four lanes, a
+pending same-workspace conflict, an artifact, notifications). Each screen is
+asserted on the text that must be on it and on the absence of any console or
+page error; the script is `check.js` in the session scratchpad, not in the
+repo, because it needs a browser this project does not depend on.
+
+| Screen | Asserted |
+|---|---|
+| Login | the three shapes: first user, invited, needs an invite |
+| Home | projects, and everything waiting on a human |
+| Board | four lanes, branch, cost, who is on each task |
+| Session (main) | the orchestrator's transcript, run banner |
+| Session (worker) | transcript, changed files, Room conflict card, 停止 |
+| Chat (group / DM) | messages, `@` highlighting, member stack |
+| Inbox | mentions, questions, pending decisions, artifacts |
+| Settings ×4 | general, team + invites, models, agent definitions |
+| Preset picker | 88 vendors by category, search, custom |
+| Agent editor | tools, permission mode, effort, turn and budget caps |
+| New task | agent definition, model, isolation, dependency |
+| Room drawer | claims, overlaps, the pending decision |
+| Session members | who can see this session |
+
+Three real bugs came out of it, each now covered by a test or a check:
+
+1. `db.one` / `db.all` fetched rows outside the connection lock. One shared
+   sqlite connection plus a page that fires six requests at once meant a
+   cursor was left un-drained while another thread executed on it, and the
+   row came back mangled (`dict(row)` raising `IndexError`). Rare with one
+   user, routine with a real page. `concurrent_reads` in `test_workbench.py`
+   fails without the fix.
+2. The first registration was open to anyone. The box is reachable the moment
+   it restarts, so the first stranger to find the port would have become its
+   administrator — ADR 0005 says the deploy token gates that first account,
+   and the code did not. `deploy_token_gate` fails without the fix.
+3. A notification pointing at a conversation reloaded the page, and the
+   conversation id was dropped from the URL before the chat mounted, so the
+   link always landed on the wrong conversation.
+
+## Migration rehearsal and deploy
+
+The production database was still at schema 1. Rehearsed on a copy first:
+schema 1 → 3 keeps every row (2 projects, 2 sessions, 1 run, 1 message),
+gives every session a conversation with its agent as a member, seeds the four
+built-in definitions and binds both `main` sessions to `orchestrator`, and is
+a no-op when run twice. The first registration then claims the old projects
+and sessions.
+
+Deployed. On the server: `schema_version 3`, the same row counts, 3
+conversations, 4 agent definitions, both sessions bound. `GET /api/auth`
+reports `needs_deploy_token: true` and an anonymous registration is 403.
+
 ## Still unproven
 
-- The frontend for any of this (batch 2 is not written).
 - Two live workers sharing a workspace, Windows, Docker.
 - A saved setup-token driving a run on the server: the server still has no
-  Claude Code login, by the owner's choice.
+  Claude Code login, by the owner's choice, so nothing has run there.
+- Every screen above was driven against seeded rows, not against a live run:
+  the streaming path and the artifact-feedback round trip are covered by the
+  backend tests, not by a browser.

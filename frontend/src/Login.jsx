@@ -8,13 +8,14 @@ import { Button, Field, I, Spinner } from "./ui";
 export default function Login({ authState, onSignedIn }) {
   const inviteToken = new URLSearchParams(window.location.search).get("invite") || "";
   const [invite, setInvite] = useState(null);
-  const [tab, setTab] = useState(authState?.registration_open || inviteToken ? "register" : "login");
+  const [tab, setTab] = useState(authState?.registration_open || authState?.needs_deploy_token || inviteToken ? "register" : "login");
   const [handle, setHandle] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const first = !!authState?.registration_open && !inviteToken;
+  const needsDeployToken = !!authState?.needs_deploy_token && !inviteToken;
 
   useEffect(() => {
     if (!inviteToken) return;
@@ -66,6 +67,16 @@ export default function Login({ authState, onSignedIn }) {
               <div className="hint mt-0.5">这个账号会成为管理员，之后别人需要你的邀请链接才能注册。</div>
             </div>
           )}
+          {needsDeployToken && (
+            <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5">
+              <div className="text-[13px] font-medium text-amber-900">这台服务器还没有第一个账号</div>
+              <div className="text-[12px] text-amber-800 mt-0.5 leading-relaxed">
+                建管理员账号需要部署令牌，否则先到的人就成了管理员。带上令牌再打开这一页：
+                <code className="block mt-1 break-all">…:8787/?token=&lt;WORKBENCH_TOKEN&gt;</code>
+                令牌在服务器的 <code>/etc/workbench.env</code> 里。
+              </div>
+            </div>
+          )}
 
           {!first && (
             <div className="flex gap-1 mb-4 border-b border-[var(--border)] -mx-5 px-5">
@@ -95,7 +106,7 @@ export default function Login({ authState, onSignedIn }) {
           </div>
 
           {error && <div className="mt-3 text-[12px] text-red-600 bg-red-50 border border-red-200 rounded-md px-2.5 py-2">{error}</div>}
-          {tab === "register" && !first && !inviteToken && !authState?.registration_open && (
+          {tab === "register" && !first && !needsDeployToken && !inviteToken && !authState?.registration_open && (
             <div className="mt-3 hint">注册需要邀请链接，找团队里的人要一个。</div>
           )}
 

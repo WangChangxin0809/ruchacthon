@@ -354,6 +354,7 @@ async def main() -> None:
 
     old_schema_migration()
     concurrent_reads()
+    deploy_token_gate()
     http_tests()
     print("all workbench assertions passed")
 
@@ -544,6 +545,43 @@ def old_schema_migration() -> None:
     teams.claim_authored({"id": "usr_x", "handle": "tool"})
     assert db.one("SELECT user_id FROM messages WHERE id = 'msg_2'")["user_id"] is None, "rows the machinery wrote are nobody's"
     db.close()
+
+
+def deploy_token_gate() -> None:
+    """With WORKBENCH_TOKEN set, the first account needs it.
+
+    A freshly deployed box is reachable before its owner gets to a browser.
+    If anonymous first registration were allowed there, whoever arrives first
+    would become the administrator -- so the deploy token gates it
+    (docs/decisions/0005). A laptop with no token set keeps an open first
+    registration, because nothing else could open it.
+
+    Runs in a subprocess: app.main reads the data dir and the token at import
+    time, and this needs a different value for both than the rest of the file.
+    """
+    script = """
+import os, sys
+sys.path.insert(0, os.environ["WB_APP"])
+from fastapi.testclient import TestClient
+import app.main as m
+H = {"Authorization": "Bearer deploy-token-for-the-test"}
+with TestClient(m.app) as c:
+    probe = c.get("/api/auth").json()
+    assert not probe["registration_open"] and probe["needs_deploy_token"], probe
+    stranger = {"handle": "mallory", "display_name": "Mallory", "password": "password-ok"}
+    assert c.post("/api/auth/register", json=stranger).status_code == 403, "a stranger cannot claim the box"
+    assert c.get("/api/auth", headers=H).json()["registration_open"], "with the token, the door is open"
+    r = c.post("/api/auth/register", json={"handle": "owner", "display_name": "Owner", "password": "password-ok"}, headers=H)
+    assert r.status_code == 201 and r.json()["user"]["is_admin"], r.text
+    assert c.get("/api/auth/me", headers=H).status_code == 403, "the token is a principal, not a person"
+    assert c.post("/api/auth/register", json=stranger, headers=H).status_code == 403, "only the first"
+print("gate ok")
+"""
+    env = {**os.environ, "WORKBENCH_DATA_DIR": os.path.join(TMP, "gate"),
+           "WORKBENCH_TOKEN": "deploy-token-for-the-test",
+           "WB_APP": os.path.join(os.path.dirname(__file__), "..")}
+    r = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
 
 
 def http_tests() -> None:

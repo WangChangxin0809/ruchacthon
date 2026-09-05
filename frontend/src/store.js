@@ -99,7 +99,9 @@ export function useWorkbench() {
     (async () => {
       try {
         const st = await api.authState();
-        if (st.me) await signIn();       // /api/auth already validated the stored token
+        // the deploy token is a principal but not a person: it may create the
+        // first account and nothing else, so it stays on the login screen
+        if (st.me && !st.me.bootstrap) await signIn();
         else setAuthState("anon");
       } catch {
         setAuthState("anon");
