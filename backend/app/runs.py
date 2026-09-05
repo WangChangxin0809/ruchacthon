@@ -752,7 +752,7 @@ class RunManager:
             rows = mgr.room.inbox(run, args.get("since") or None)
             items = [{"kind": m["kind"], "from_run_id": m["from_run_id"], "payload": m["payload"], "at": m["created_at"]} for m in rows]
             # rows come back newest first; the cursor is the newest one seen
-            return _ok({"items": items, "next_since": (rows[0]["created_at"] if rows else args.get("since") or "")})
+            return _ok({"items": items, "next_since": (mgr.room.inbox_cursor(rows[0]) if rows else args.get("since") or "")})
 
         @tool("list_agents", "List every agent in this project you can reach: name, kind, task, status, branch", {})
         async def list_agents(args):

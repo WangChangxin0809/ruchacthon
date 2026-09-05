@@ -225,11 +225,27 @@ async def main() -> None:
     await room.broadcast(other_run, "第一条")
     first = room.inbox(brun, None)
     assert len(first) == 1
-    cursor = first[0]["created_at"]
+    cursor = room.inbox_cursor(first[0])
     assert room.inbox(brun, cursor) == [], "nothing new after the cursor"
     await room.broadcast(other_run, "第二条")
     fresh = room.inbox(brun, cursor)
     assert len(fresh) == 1 and fresh[0]["payload"]["text"] == "第二条"
+
+    # two broadcasts inside the same millisecond share a created_at: a cursor
+    # that is only a timestamp loses one of them, and which one depends on how
+    # fast the machine is. The cursor carries the id for exactly this.
+    cursor = room.inbox_cursor(fresh[0])
+    for i in range(6):
+        await room.broadcast(other_run, f"同一毫秒 {i}")
+    seen: list[str] = []
+    while (batch := room.inbox(brun, cursor)):
+        seen += [m["payload"]["text"] for m in batch]     # a batch is newest first
+        cursor = room.inbox_cursor(batch[0])
+    assert seen == [f"同一毫秒 {i}" for i in reversed(range(6))], seen
+    assert room.inbox(brun, cursor) == [], "and nothing is delivered twice"
+    # a cursor from a build that stored a timestamp still works: it may repeat
+    # its own millisecond, but it never swallows one
+    assert len(room.inbox(brun, first[0]["created_at"])) >= 7
 
     # --- renaming keeps the task label in step
     task = db.insert("tasks", {"id": new_id("task"), "project_id": project["id"], "title": "旧名字", "description": "", "kind": "worker",

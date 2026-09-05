@@ -17,6 +17,13 @@ export default function Login({ authState, onSignedIn }) {
   const first = !!authState?.registration_open && !inviteToken;
   const needsDeployToken = !!authState?.needs_deploy_token && !inviteToken;
 
+  // authState arrives one tick after mount, so the tab follows it rather than
+  // being decided before the server has said which of the three shapes this is
+  useEffect(() => {
+    if (!authState) return;
+    setTab(authState.registration_open || authState.needs_deploy_token || inviteToken ? "register" : "login");
+  }, [authState]);   // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (!inviteToken) return;
     api.invite(inviteToken).then(setInvite).catch((e) => setError(e.message));

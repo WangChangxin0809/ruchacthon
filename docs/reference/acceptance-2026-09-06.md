@@ -91,6 +91,14 @@ Three real bugs came out of it, each now covered by a test or a check:
    conversation id was dropped from the URL before the chat mounted, so the
    link always landed on the wrong conversation.
 
+A fourth came out of a test that failed roughly one run in three: the Room
+inbox cursor was a millisecond timestamp, so two workers broadcasting inside
+the same millisecond lost one message permanently -- exactly the case the
+feature exists for. The cursor is now the row's insertion sequence; a cursor
+from an older build is still accepted and errs toward repeating a millisecond
+rather than swallowing it. The test now sends six broadcasts in a tight loop
+and asserts each arrives exactly once.
+
 ## Migration rehearsal and deploy
 
 The production database was still at schema 1. Rehearsed on a copy first:

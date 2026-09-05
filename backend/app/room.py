@@ -212,10 +212,30 @@ class Room:
         return {"ok": True, "message_id": m["id"]}
 
     def inbox(self, run: dict, since: str | None = None) -> list[dict]:
-        rows = self.db.all("SELECT * FROM room_messages WHERE project_id = ? AND from_run_id IS NOT ? AND (to_run_id IS NULL OR to_run_id = ?) "
-                           "AND created_at > ? ORDER BY created_at DESC LIMIT 50",
-                           [run["project_id"], run["id"], run["id"], since or ""])
-        return rows
+        """Messages for this run that are newer than `since`, newest first.
+
+        The cursor is the row's insertion sequence, not its timestamp. Two
+        workers broadcasting inside the same millisecond share a `created_at`,
+        and a `created_at > cursor` filter drops one of them for good -- which
+        one depending on how fast the machine is. A cursor from an older build
+        is still accepted and resolved to the last row written by then."""
+        return self.db.all("SELECT rowid AS seq, * FROM room_messages WHERE project_id = ? AND from_run_id IS NOT ? "
+                           "AND (to_run_id IS NULL OR to_run_id = ?) AND rowid > ? ORDER BY rowid DESC LIMIT 50",
+                           [run["project_id"], run["id"], run["id"], self._cursor_seq(since)])
+
+    def _cursor_seq(self, since: str | None) -> int:
+        if not since:
+            return 0
+        if since.isdigit():
+            return int(since)
+        # strictly before, so a timestamp cursor re-delivers its own
+        # millisecond rather than swallowing it -- the safe way to be wrong
+        row = self.db.one("SELECT MAX(rowid) AS seq FROM room_messages WHERE created_at < ?", [since.partition("#")[0]])
+        return (row or {}).get("seq") or 0
+
+    @staticmethod
+    def inbox_cursor(row: dict) -> str:
+        return str(row["seq"])
 
     async def handoff(self, run: dict, raw_path: str, to_task_id: str, note: str) -> dict:
         target_task = self.db.one("SELECT * FROM tasks WHERE id = ? AND project_id = ?", [to_task_id, run["project_id"]])
