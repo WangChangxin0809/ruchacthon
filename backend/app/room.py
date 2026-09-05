@@ -54,12 +54,17 @@ class Room:
         self.db = db
         self.bus = bus
         self.deliver: Deliver | None = None   # set by RunManager
+        self.on_decision_pending = None       # set by main: (decision) -> None, notifies the project's team
 
     # ---- identity ----------------------------------------------------------
     def identity(self, run: dict) -> dict:
         task = self.db.one("SELECT id, title FROM tasks WHERE id = ?", [run["task_id"]]) if run["task_id"] else None
+        ses = self.db.one("SELECT agent_name, title FROM sessions WHERE id = ?", [run["session_id"]]) or {}
+        conv = self.db.one("SELECT id FROM conversations WHERE session_id = ?", [run["session_id"]])
         return {"run_id": run["id"], "task_id": run["task_id"], "task_title": task["title"] if task else run["kind"],
-                "workspace_id": run["workspace_id"], "kind": run["kind"]}
+                "workspace_id": run["workspace_id"], "kind": run["kind"], "session_id": run["session_id"],
+                "conversation_id": conv["id"] if conv else None, "agent_name": ses.get("agent_name") or ses.get("title"),
+                "created_by": run.get("created_by")}
 
     # ---- claims ------------------------------------------------------------
     def active_claims(self, project_id: str) -> list[dict]:
@@ -116,6 +121,8 @@ class Room:
         self.bus.emit("decision", d, project_id=run["project_id"], task_id=run["task_id"], run_id=run["id"])
         self.bus.emit("run_blocked", {"reason": "claim_conflict", "decision_id": d["id"], "path": path},
                       project_id=run["project_id"], task_id=run["task_id"], run_id=run["id"])
+        if self.on_decision_pending:
+            self.on_decision_pending(d)
         return {"ok": False, "conflict": True, "decision_id": d["id"], "status": "pending",
                 "holder": subject["holder"],
                 "message": "another run in the SAME workspace holds this path. A human must decide. Do not edit this path; "
@@ -201,13 +208,13 @@ class Room:
                 "note": None if target_run else "target task has no run yet; it will see the handoff in its inbox when it starts"}
 
     # ---- decisions ---------------------------------------------------------
-    async def decide(self, decision_id: str, decision: str, reason: str, actor: str) -> dict:
+    async def decide(self, decision_id: str, decision: str, reason: str, actor: str, actor_id: str | None = None) -> dict:
         d = self.db.one("SELECT * FROM decisions WHERE id = ?", [decision_id])
         if not d:
             return {"ok": False, "error": "no such decision"}
         if d["status"] != "pending":
             return {"ok": False, "error": f"already decided: {d['decision']}"}
-        self.db.update("decisions", decision_id, status="decided", decision=decision, reason=reason, actor=actor, decided_at=now())
+        self.db.update("decisions", decision_id, status="decided", decision=decision, reason=reason, actor=actor, actor_id=actor_id, decided_at=now())
         d = self.db.one("SELECT * FROM decisions WHERE id = ?", [decision_id])
         self.bus.emit("decision", d, project_id=d["project_id"], run_id=d["blocked_run_id"])
         effects = []

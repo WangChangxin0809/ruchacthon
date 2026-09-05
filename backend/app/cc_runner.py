@@ -67,6 +67,10 @@ class CCRun:
         self.pid: int | None = None
         self.cancel_requested = False
         self.finished = False
+        # `client` exists before connect() returns (0.5s+ with MCP servers) and
+        # the SDK refuses query() until then; sends in that window wait here.
+        self.ready = False
+        self._pending: list[str] = []
         # Messages `send()` pushed into a turn that may have ended before the
         # model saw them; RunManager re-delivers them as a follow-up run.
         self.unconsumed: list[str] = []
@@ -102,6 +106,10 @@ class CCRun:
             return RunOutcome(status="failed", error=f"could not start claude: {e}")
         self.pid = _pid_of(self.client)
         await self.client.query(self.spec.prompt)
+        self.ready = True
+        for text in self._pending:
+            await self.client.query(text)
+        self._pending.clear()
         outcome: RunOutcome | None = None
         try:
             async for m in self.client.receive_messages():
@@ -178,6 +186,9 @@ class CCRun:
         if self.client is None or self.finished:
             raise RuntimeError("run is not live")
         self._sends_since_output.append(text)
+        if not self.ready:
+            self._pending.append(text)
+            return
         await self.client.query(text)
 
     async def interrupt(self) -> None:

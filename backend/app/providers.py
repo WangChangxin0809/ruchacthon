@@ -48,25 +48,94 @@ class ProviderProfiles:
         self.secrets = secrets
 
     # ---- CRUD ----------------------------------------------------------------
-    def list(self) -> list[dict]:
-        return [self.public(p) for p in self.db.all("SELECT * FROM provider_profiles ORDER BY created_at")]
+    def list(self, user: dict | None = None) -> list[dict]:
+        rows = self.db.all("SELECT * FROM provider_profiles ORDER BY created_at")
+        return [self.public(p, user) for p in rows if user is None or self.visible_to(p, user)]
 
     def get(self, pid: str) -> dict | None:
         return self.db.one("SELECT * FROM provider_profiles WHERE id = ?", [pid])
 
+    # ---- ownership (design §5.2) ---------------------------------------------
+    def _team_ids(self, user: dict) -> set[str]:
+        return {r["team_id"] for r in self.db.all("SELECT team_id FROM team_members WHERE user_id = ?", [user["id"]])}
+
+    def visible_to(self, p: dict, user: dict) -> bool:
+        """Mine, shared inside one of my teams, or a legacy server profile (owner NULL)."""
+        if user.get("is_admin") or p.get("owner_id") in (None, user["id"]):
+            return True
+        return bool(p.get("shared")) and (p.get("team_id") in self._team_ids(user) or p.get("team_id") is None)
+
+    def can_edit(self, p: dict, user: dict) -> bool:
+        return bool(user.get("is_admin")) or p.get("owner_id") == user["id"]
+
+    def _owner(self, p: dict) -> dict | None:
+        return self.db.one("SELECT id, handle, is_admin FROM users WHERE id = ?", [p["owner_id"]]) if p.get("owner_id") else None
+
+    def env_allowed(self, p: dict | None) -> bool:
+        """The server-environment fallback for a credential_ref is for admin-owned
+        (or legacy) profiles only."""
+        if p is None or p.get("owner_id") is None:
+            return True
+        o = self._owner(p)
+        return bool(o and o["is_admin"])
+
+    def ref_allowed(self, p: dict | None) -> bool:
+        """A non-admin's profile may only read/write its own `profile.<handle>.*`
+        names in the store: store names are predictable (`claude_code.oauth_token`,
+        another person's `profile.x.y`), so a client-chosen ref is an oracle and a
+        theft path otherwise. Admin-owned and legacy profiles may name anything."""
+        if p is None or p.get("owner_id") is None:
+            return True
+        o = self._owner(p)
+        if not o:
+            return False
+        return bool(o["is_admin"]) or (p.get("credential_ref") or "").startswith(f"profile.{o['handle']}.")
+
+    def _store_ref(self, p: dict) -> str | None:
+        return p.get("credential_ref") if self.ref_allowed(p) else None
+
+    def resolve(self, profile_id: str | None, model: str | None, user_id: str | None, project: dict | None) -> tuple[dict | None, str | None]:
+        """Explicit profile -> the user's default -> the project's team default -> global -> server login; same chain for the model."""
+        user = self.db.one("SELECT * FROM users WHERE id = ?", [user_id]) if user_id else None
+        if profile_id:
+            p = self.get(profile_id)
+            if p and user and not self.visible_to(p, user):
+                raise PermissionError("这个 Provider 不属于你，也没有共享给你的团队")
+        else:
+            p = None
+        prefs = (user or {}).get("prefs") or {}
+        if isinstance(prefs, str):
+            import json
+            prefs = json.loads(prefs or "{}")
+        team = self.db.one("SELECT * FROM teams WHERE id = ?", [(project or {}).get("team_id")]) if (project or {}).get("team_id") else None
+        for cand in (prefs.get("default_profile_id"), (team or {}).get("default_profile_id"), self.db.setting("default_profile_id")):
+            if p:
+                break
+            if cand:
+                p = self.get(cand)
+                if p and user and not self.visible_to(p, user):   # a default somebody else set is not a licence
+                    p = None
+        model = model or prefs.get("default_model") or (team or {}).get("default_model") or self.db.setting("default_model") or None
+        return p, model
+
     def create(self, name: str, kind: str, *, display_name: str | None = None, base_url: str | None = None, model: str | None = None,
                models: list[str] | None = None, credential_ref: str | None = None, extra_env: dict | None = None,
-               secret: str | None = None) -> dict:
+               secret: str | None = None, owner: dict | None = None, team_id: str | None = None, shared: bool = False) -> dict:
         if kind not in KINDS:
             raise ValueError(f"kind must be one of {sorted(KINDS)}")
         if not re.match(r"^[a-z0-9][a-z0-9-]{0,63}$", name):
             raise ValueError("Provider ID 必须是小写字母/数字/连字符")
+        if self.db.one("SELECT id FROM provider_profiles WHERE name = ?", [name]):
+            raise ValueError("这个 Provider ID 已被占用")
         if KINDS[kind]["needs_base_url"] and not base_url:
             raise ValueError("这类提供方需要 API 地址")
         extra_env = self._check_extra(extra_env or {})
         models = [m for m in (models or []) if m] or ([model] if model else [])
         model = model or (models[0] if models else None)
-        ref = credential_ref or (f"profile.{name}" if KINDS[kind]["credential"] else None)
+        default_ref = f"profile.{owner['handle']}.{name}" if owner else f"profile.{name}"
+        if owner and not owner.get("is_admin"):
+            credential_ref = None                # only an admin may point a profile at an arbitrary name
+        ref = credential_ref or (default_ref if KINDS[kind]["credential"] else None)
         if secret:
             if not KINDS[kind]["credential"]:
                 raise ValueError("这类提供方不接受密钥")
@@ -74,11 +143,13 @@ class ProviderProfiles:
         row = self.db.insert("provider_profiles", {"id": new_id("pp"), "name": name, "display_name": display_name or name, "kind": kind,
                                                    "base_url": base_url or None, "model": model, "models": models,
                                                    "credential_env": KINDS[kind]["credential"], "credential_ref": ref,
-                                                   "extra_env": extra_env, "compat": {}, "created_at": now()})
-        return self.public(row)
+                                                   "extra_env": extra_env, "compat": {}, "created_at": now(),
+                                                   "owner_id": owner["id"] if owner else None, "team_id": team_id, "shared": 1 if shared else 0})
+        return self.public(row, owner)
 
     def update(self, pid: str, *, display_name: str | None = None, base_url: str | None = None, model: str | None = None,
-               models: list[str] | None = None, extra_env: dict | None = None, secret: str | None = None) -> dict:
+               models: list[str] | None = None, extra_env: dict | None = None, secret: str | None = None,
+               shared: bool | None = None) -> dict:
         p = self.get(pid)
         if not p:
             raise KeyError(pid)
@@ -93,9 +164,13 @@ class ProviderProfiles:
             fields["model"] = model or None
         if extra_env is not None:
             fields["extra_env"] = self._check_extra(extra_env)
+        if shared is not None:
+            fields["shared"] = 1 if shared else 0
         if secret:
             if not p["credential_ref"]:
                 raise ValueError("这类提供方不接受密钥")
+            if not self.ref_allowed(p):
+                raise PermissionError("这个 Provider 引用的密钥名不属于你")
             self.secrets.set(p["credential_ref"], secret)
         if fields:
             self.db.update("provider_profiles", pid, **fields)
@@ -104,6 +179,8 @@ class ProviderProfiles:
     def clear_secret(self, pid: str) -> None:
         p = self.get(pid)
         if p and p["credential_ref"]:
+            if not self.ref_allowed(p):
+                raise PermissionError("这个 Provider 引用的密钥名不属于你")
             self.secrets.delete(p["credential_ref"])
 
     def delete(self, pid: str) -> None:
@@ -116,11 +193,17 @@ class ProviderProfiles:
                 raise ValueError(f"extra_env 只能放非密钥的大写变量，拒绝 {k!r}；密钥请填在密钥框里")
         return extra_env
 
-    def public(self, p: dict) -> dict:
+    def public(self, p: dict, user: dict | None = None) -> dict:
         d = dict(p)
-        d["credential_set"] = self.secrets.is_set(p.get("credential_ref"))
-        d["credential_source"] = ("store" if any(s["name"] == p.get("credential_ref") for s in self.secrets.names())
+        ref = self._store_ref(p)
+        d["credential_set"] = self.secrets.is_set(ref, self.env_allowed(p))
+        d["credential_source"] = ("store" if ref and any(s["name"] == ref for s in self.secrets.names())
                                   else ("env" if d["credential_set"] else None))
+        d["shared"] = bool(p.get("shared"))
+        d["mine"] = bool(user) and p.get("owner_id") == user["id"]
+        d["editable"] = bool(user) and self.can_edit(p, user)
+        o = self.db.one("SELECT display_name FROM users WHERE id = ?", [p.get("owner_id")]) if p.get("owner_id") else None
+        d["owner_name"] = o["display_name"] if o else None
         d["accepts_secret"] = bool(KINDS.get(p["kind"], {}).get("credential"))
         d["kind_label"] = KINDS.get(p["kind"], {}).get("label", p["kind"])
         d["models"] = p.get("models") or ([p["model"]] if p.get("model") else [])
@@ -155,7 +238,7 @@ class ProviderProfiles:
         target = KINDS[kind]["credential"]
         cred_missing = False
         if target:
-            val = self.secrets.get(p.get("credential_ref"))
+            val = self.secrets.get(self._store_ref(p), self.env_allowed(p))
             if val:
                 env[target] = val
                 if target == "ANTHROPIC_AUTH_TOKEN":     # a gateway token must not fall through to a stray API key

@@ -25,8 +25,13 @@ real conflicts are decided by you, not by a merge heuristic.
 
 ```bash
 python3 -m pip install --user --break-system-packages -r backend/requirements.txt
-python3 -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8787
+WORKBENCH_SINGLE_USER=1 python3 -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8787
 ```
+
+`WORKBENCH_SINGLE_USER=1` 是本机单人模式：自动用一个叫 `local` 的管理员账号，不用注册登录。
+部署给多人用时不要设它——那时打开页面是登录界面，第一个注册的人成为管理员并拥有「默认团队」，
+其他人通过 ⚙ → 团队 里生成的邀请链接加入。一个先在单人模式下用过的数据目录也可以直接改成多人
+模式：第一个注册的人会接管 `local` 账号（它的团队、项目和会话都归这个人）。
 
 Windows 用 `py -m pip install -r backend/requirements.txt` 和
 `py -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8787`。
@@ -41,7 +46,7 @@ npm run dev -- --host 127.0.0.1 --port 5173
 
 打开 `http://localhost:5173`：
 
-1. 左下角填你的名字（多人共用时 agent 要知道是谁在说话）。首页「从这里开始」：克隆一个 git 仓库、导入服务器上已有目录，或新建空项目。
+1. 首页「从这里开始」：克隆一个 git 仓库、导入服务器上已有目录，或新建空项目。
 2. 点左侧项目进入**看板**：四列「进行中 / 需要你 / 审阅中 / 可合并」，每张卡是一个 worker（任务名、分支、状态、花费、最近活动）。
    右上「主 agent」进入主会话，说比如「把 README 里的安装步骤整理一下，另外派一个 worker 给 utils 加单元测试」；
    主 agent 可以自己干，也会用 `spawn_worker` 派 worker。「＋ 任务」直接开一个 worker（写一段任务描述，选模型）。
@@ -54,6 +59,9 @@ npm run dev -- --host 127.0.0.1 --port 5173
 5. 左下角「设置」→ **模型**：像 dsh 一样按提供方加卡片，密钥只写不读，按运行注入，不改全局 Claude Code 配置；
    输入框下方的模型选择器列出「提供方 ▸ 模型」。设置 → **Claude Code** 看登录状态、粘贴 `claude setup-token` 的令牌。
 6. 左下角「聊天」是人和人聊的地方（拉群、贴任务链接）；悬停一条消息可「派给 agent」，它会变成一个 worker 任务。
+
+多人共用一个会话时，agent 只回复 @主 agent（或 @agent、@ 加 worker 的任务名）的消息，其他消息其他成员能看到但模型看不到；
+发给模型的每一句都带发送者的名字。worker 会话只有创建者能看，owner 可以拉人；主 agent 会话是项目的公共房间，团队成员打开即加入。
 
 默认所有 worker 用你 Claude Code 登录的模型；想省钱，后端启动前 `export WORKBENCH_MODEL=claude-sonnet-5`。
 并发上限 `WORKBENCH_MAX_CONCURRENT_RUNS`（默认 3）。数据在 `backend/data/`（可用 `WORKBENCH_DATA_DIR` 改）。

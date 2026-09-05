@@ -31,13 +31,24 @@ class EventBus:
         return lambda: self._listeners.discard(fn)
 
     def emit(self, type_: str, payload: dict, *, project_id: str | None = None, task_id: str | None = None,
-             run_id: str | None = None, session_id: str | None = None, persist: bool = True) -> dict:
+             run_id: str | None = None, session_id: str | None = None, persist: bool = True,
+             user_id: str | None = None) -> dict:
+        # user_id makes an event private to one person (notifications); every
+        # WebSocket and replay filter honours it. An event about a run or a task
+        # is an event about that session: fill session_id in so the visibility
+        # filter (teams.event_visible) has one key to gate on.
+        if session_id is None and run_id:
+            r = self.db.one("SELECT session_id FROM runs WHERE id = ?", [run_id])
+            session_id = r["session_id"] if r else None
+        if session_id is None and task_id:
+            s = self.db.one("SELECT id FROM sessions WHERE task_id = ? ORDER BY created_at DESC LIMIT 1", [task_id])
+            session_id = s["id"] if s else None
         ev: dict[str, Any] = {"id": new_id("ev"), "project_id": project_id, "task_id": task_id, "run_id": run_id,
-                              "session_id": session_id, "type": type_, "payload": payload, "ts": now()}
+                              "session_id": session_id, "user_id": user_id, "type": type_, "payload": payload, "ts": now()}
         if persist:
             cur = self.db.execute(
-                "INSERT INTO events (id, project_id, task_id, run_id, session_id, type, payload, ts) VALUES (?,?,?,?,?,?,?,?)",
-                [ev["id"], project_id, task_id, run_id, session_id, type_, _dumps(payload), ev["ts"]])
+                "INSERT INTO events (id, project_id, task_id, run_id, session_id, user_id, type, payload, ts) VALUES (?,?,?,?,?,?,?,?,?)",
+                [ev["id"], project_id, task_id, run_id, session_id, user_id, type_, _dumps(payload), ev["ts"]])
             ev["seq"] = cur.lastrowid
         else:
             ev["seq"] = None

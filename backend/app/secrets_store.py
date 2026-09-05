@@ -61,15 +61,19 @@ class SecretStore:
             self._save(data)
             return True
 
-    def get(self, name: str | None) -> str | None:
-        """Store first, then the process environment."""
+    def get(self, name: str | None, allow_env: bool = True) -> str | None:
+        """Store first, then the process environment. Callers pass
+        allow_env=False for a profile a non-admin owns: otherwise anyone could
+        point a profile at the server's own CLAUDE_CODE_OAUTH_TOKEN."""
         if not name:
             return None
         v = self._load().get(name)
-        return v if v else os.environ.get(name) or None
+        if v:
+            return v
+        return (os.environ.get(name) or None) if allow_env else None
 
-    def is_set(self, name: str | None) -> bool:
-        return bool(self.get(name))
+    def is_set(self, name: str | None, allow_env: bool = True) -> bool:
+        return bool(self.get(name, allow_env))
 
     def names(self) -> list[dict]:
         with self._lock:

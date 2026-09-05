@@ -25,6 +25,7 @@ from .devservers import DevServerManager
 from .events import EventBus
 from .providers import ProviderProfiles, scrub
 from .room import Room
+from .teams import Teams, mentioned_names, should_run
 from .workspaces import WorkspaceManager
 
 MAX_CONCURRENT = int(os.environ.get("WORKBENCH_MAX_CONCURRENT_RUNS", "3"))
@@ -36,7 +37,9 @@ You talk to the human in this session and you can delegate background work to wo
 separate Claude Code process in its own git worktree. Use the workbench tools (mcp__workbench__*) to spawn,
 list, message and cancel workers, and submit_artifact to show the human results. Do not use the built-in
 Agent tool; workers are the only way to parallelise. Keep the human informed in plain language: task names,
-not ids. When a worker finishes, summarise what it produced and where (workspace branch)."""
+not ids. When a worker finishes, summarise what it produced and where (workspace branch).
+Messages from humans are prefixed with the sender's name in brackets; several people may share this session, so address
+people by name -- in a multi-person session you only receive the messages that mention you."""
 
 WORKER_SYSTEM = """You are a background worker in a local multi-agent workbench. You are running as a separate
 process inside your own workspace ({ws_kind}) at {cwd}; only write files there. Your task: "{title}".
@@ -45,14 +48,22 @@ before you edit it, room_release when done, and read room_inbox if you are told 
 conflict pending a human decision, do not touch that path; the decision will arrive as a message.
 When you finish, call submit_artifact (mcp__room__submit_artifact) at least once -- a 'diff' artifact of your
 changes plus a short 'markdown' summary -- then stop. The process ending is not acceptance: a human reviews
-your artifacts and may send feedback into this session."""
+your artifacts and may send feedback into this session.
+Messages from humans are prefixed with the sender's name in brackets; several people may share this session, so address
+people by name -- in a multi-person session you only receive the messages that mention you."""
+
+BACKLOG_HEADER = "[Earlier in this conversation, not yet shown to you]"
+BACKLOG_MAX = 30
 
 
 class RunManager:
     def __init__(self, db: Database, bus: EventBus, workspaces: WorkspaceManager, room: Room,
-                 artifacts: ArtifactStore, devservers: DevServerManager, profiles: ProviderProfiles):
+                 artifacts: ArtifactStore, devservers: DevServerManager, profiles: ProviderProfiles,
+                 teams: Teams | None = None, notify=None):
         self.db, self.bus, self.workspaces, self.room = db, bus, workspaces, room
         self.artifacts, self.devservers, self.profiles = artifacts, devservers, profiles
+        self.teams = teams or Teams(db, bus)
+        self.notify = notify
         self.live: dict[str, CCRun] = {}
         self.tasks: dict[str, asyncio.Task] = {}
         self._sem = asyncio.Semaphore(MAX_CONCURRENT)
@@ -61,10 +72,9 @@ class RunManager:
 
     # ---- creation ----------------------------------------------------------
     def create_run(self, *, project: dict, session: dict, workspace: dict, kind: str, prompt: str,
-                   task_id: str | None, profile_id: str | None, model: str | None = None) -> dict:
-        profile_id = profile_id or self.db.setting("default_profile_id") or None
-        profile = self.profiles.get(profile_id) if profile_id else None
-        model = model or self.db.setting("default_model") or None
+                   task_id: str | None, profile_id: str | None, model: str | None = None, created_by: str | None = None) -> dict:
+        # whose key: the run's creator, resolved profile -> user default -> team default -> global -> server login
+        profile, model = self.profiles.resolve(profile_id, model, created_by, project)
         _, snapshot = self.profiles.env_for(profile, model)
         attempt = 1 + (self.db.one("SELECT COUNT(*) AS n FROM runs WHERE session_id = ?", [session["id"]]) or {"n": 0})["n"]
         run = self.db.insert("runs", {"id": new_id("run"), "project_id": project["id"], "task_id": task_id, "session_id": session["id"],
@@ -72,7 +82,7 @@ class RunManager:
                                       "profile_snapshot": snapshot, "kind": kind, "attempt_no": attempt, "prompt": prompt,
                                       "status": "queued", "outcome": None, "cc_session_id": session.get("cc_session_id"),
                                       "pid": None, "started_at": None, "ended_at": None, "result_summary": None, "error": None,
-                                      "cost_usd": None, "num_turns": None, "created_at": now()})
+                                      "cost_usd": None, "num_turns": None, "created_at": now(), "created_by": created_by})
         self._emit_status(run, "queued")
         self._schedule(run["id"])
         return run
@@ -198,13 +208,17 @@ class RunManager:
                                cc_session_id=cc.cc_session_id or self.db.one("SELECT cc_session_id FROM runs WHERE id = ?", [run_id])["cc_session_id"])
         if outcome.status != "succeeded":
             self.room.release_all_for_run(run_id, reason=outcome.status)
+        if run["kind"] == "worker" and run["task_id"] and self.notify:
+            task = self.db.one("SELECT title, created_by FROM tasks WHERE id = ?", [run["task_id"]]) or {}
+            self.notify.send(task.get("created_by"), "run_finished", f"「{task.get('title')}」运行{_STATUS_ZH.get(outcome.status, outcome.status)}",
+                             summary[:200], project_id=run["project_id"], link=f"?p={run['project_id']}&s={run['session_id']}")
         if cc.unconsumed and outcome.status in ("succeeded", "exhausted"):
             # the turn ended before the model answered these; resume the session with them
             session = self.db.one("SELECT * FROM sessions WHERE id = ?", [run["session_id"]])
             project = self.db.one("SELECT * FROM projects WHERE id = ?", [run["project_id"]])
             ws = self.workspaces.get(run["workspace_id"])
             self.create_run(project=project, session=session, workspace=ws, kind=run["kind"], prompt="\n\n".join(cc.unconsumed),
-                            task_id=run["task_id"], profile_id=run["profile_id"])
+                            task_id=run["task_id"], profile_id=run["profile_id"], created_by=run.get("created_by"))
 
     # ---- control -----------------------------------------------------------
     async def cancel(self, run_id: str, actor: str = "human") -> dict:
@@ -224,26 +238,147 @@ class RunManager:
         await cc.interrupt()
         return {"ok": True, "status": "cancelling"}
 
-    async def deliver(self, run_id: str, text: str, author: str = "room") -> dict:
-        """Get `text` in front of the agent behind `run_id`: live -> queued
-        turn on its session; finished -> a new run resuming that session."""
+    async def deliver(self, run_id: str, text: str, author: str = "room", *, user_id: str | None = None,
+                      model_text: str | None = None, message_id: str | None = None) -> dict:
+        """Get `text` in front of the agent behind `run_id`: live -> pushed into
+        the turn; still queued -> appended to that run's prompt (never a second
+        queued run for one session); finished -> a new run resuming the session.
+        `model_text` is what the model sees when it differs from the stored row
+        (sender prefix, backlog); `message_id` says the caller stored the row."""
         run = self.db.one("SELECT * FROM runs WHERE id = ?", [run_id])
         if not run:
             return {"ok": False, "error": "no such run"}
-        self.db.insert("messages", {"id": new_id("msg"), "session_id": run["session_id"], "run_id": run_id, "role": "user",
-                                    "author": author, "blocks": [{"type": "text", "text": text}], "created_at": now()})
+        if run["status"] not in ("queued", "running"):
+            # the caller named the run that produced an artifact / holds a claim;
+            # if its session already has an active attempt, that is the agent now
+            alt = self.active_run(run["session_id"])
+            if alt:
+                run, run_id = alt, alt["id"]
+        model_text = model_text or text
+        if message_id is None:
+            msg = self.db.insert("messages", {"id": new_id("msg"), "session_id": run["session_id"], "run_id": run_id, "role": "user",
+                                              "author": author, "user_id": user_id, "blocks": [{"type": "text", "text": text}], "created_at": now()})
+            self.bus.emit("message", msg, project_id=run["project_id"], task_id=run["task_id"], run_id=run_id, session_id=run["session_id"])
         cc = self.live.get(run_id)
-        if cc is not None and cc.client is not None:
-            await cc.send(text)
-            self.bus.emit("message", self.db.one("SELECT * FROM messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 1", [run["session_id"]]),
-                          project_id=run["project_id"], task_id=run["task_id"], run_id=run_id, session_id=run["session_id"])
+        if cc is not None and cc.client is not None and not cc.finished:
+            await cc.send(model_text)
             return {"ok": True, "how": "live", "run_id": run_id}
+        if run["status"] == "queued":
+            self.db.update("runs", run_id, prompt=run["prompt"] + "\n\n" + model_text)
+            return {"ok": True, "how": "queued", "run_id": run_id}
         session = self.db.one("SELECT * FROM sessions WHERE id = ?", [run["session_id"]])
         project = self.db.one("SELECT * FROM projects WHERE id = ?", [run["project_id"]])
         ws = self.workspaces.get(run["workspace_id"])
-        new = self.create_run(project=project, session=session, workspace=ws, kind=run["kind"], prompt=text, task_id=run["task_id"],
-                              profile_id=run["profile_id"])
+        task = self.db.one("SELECT created_by FROM tasks WHERE id = ?", [run["task_id"]]) if run["task_id"] else None
+        creator = task["created_by"] if task and task["created_by"] else (user_id or run.get("created_by"))
+        new = self.create_run(project=project, session=session, workspace=ws, kind=run["kind"], prompt=model_text, task_id=run["task_id"],
+                              profile_id=self.inheritable_profile(run["profile_id"], creator), created_by=creator)
+        if message_id:
+            self.db.update("messages", message_id, run_id=new["id"])
         return {"ok": True, "how": "new_run", "run_id": new["id"]}
+
+    def active_run(self, session_id: str) -> dict | None:
+        return self.db.one("SELECT * FROM runs WHERE session_id = ? AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1", [session_id])
+
+    def inheritable_profile(self, profile_id: str | None, user_id: str | None) -> str | None:
+        """A follow-up run keeps the previous run's profile only if the person
+        it now runs as may use it; otherwise their own default chain applies."""
+        if not profile_id:
+            return None
+        p = self.profiles.get(profile_id)
+        u = self.db.one("SELECT * FROM users WHERE id = ?", [user_id]) if user_id else None
+        return profile_id if p and (u is None or self.profiles.visible_to(p, u)) else None
+
+    # ---- the one path a human message takes into a session ------------------
+    async def send_human(self, session: dict, user: dict, text: str, *, profile_id: str | None = None, model: str | None = None) -> dict:
+        """Store + broadcast first (other members see it live), then apply the
+        @ rule: one human -> the agent gets everything; several -> only what
+        @-mentions it, with the skipped backlog replayed on the next mention.
+        Every line the model sees is prefixed `[name (@handle)] `."""
+        conv = self.teams.ensure_session_conversation(session, session.get("created_by"))
+        run_it = should_run(conv["agent_reply"], self.teams.human_count(conv["id"]), text, session)
+        active = self.active_run(session["id"])
+        msg = self.db.insert("messages", {"id": new_id("msg"), "session_id": session["id"], "run_id": active["id"] if active else None, "role": "user",
+                                          "author": user["display_name"], "user_id": user["id"], "blocks": [{"type": "text", "text": text}],
+                                          "created_at": now(), "delivered_to_agent": 0})
+        self.bus.emit("message", msg, project_id=session["project_id"], task_id=session.get("task_id"), session_id=session["id"],
+                      run_id=active["id"] if active else None)
+        self._mention_humans(user, conv, text)
+        if not run_it:
+            return {"ok": True, "how": "stored", "delivered": False, "message_id": msg["id"],
+                    "note": "多人会话：只有 @主 agent（或 @agent、@<agent 名字>）时它才会看到"}
+        model_text = self._model_text(session, user, text, msg["id"])
+        # the flag says "the model got it": set only once routing succeeded, so a
+        # failed delivery is replayed under the backlog header next time
+        d = await self.route_to_agent(session, text, model_text, author=user["display_name"], user_id=user["id"], message_id=msg["id"],
+                                      profile_id=profile_id, model=model)
+        if d.get("ok"):
+            self.db.execute("UPDATE messages SET delivered_to_agent = 1 WHERE id = ?", [msg["id"]])
+        return d
+
+    async def route_to_agent(self, session: dict, text: str, model_text: str, *, author: str, user_id: str | None,
+                             message_id: str | None = None, profile_id: str | None = None, model: str | None = None) -> dict:
+        """Live or queued run -> deliver into it; a finished worker -> resume
+        it; otherwise a fresh run in the project's main workspace. Also the
+        path a group message takes to an agent member (design §2.1)."""
+        active = self.active_run(session["id"])
+        last = active or (self.db.one("SELECT * FROM runs WHERE session_id = ? ORDER BY created_at DESC LIMIT 1", [session["id"]])
+                          if session["kind"] == "worker" else None)
+        if last:
+            return await self.deliver(last["id"], text, author=author, user_id=user_id, model_text=model_text, message_id=message_id)
+        if message_id is None:
+            msg = self.db.insert("messages", {"id": new_id("msg"), "session_id": session["id"], "run_id": None, "role": "user", "author": author,
+                                              "user_id": user_id, "blocks": [{"type": "text", "text": text}], "created_at": now()})
+            self.bus.emit("message", msg, project_id=session["project_id"], task_id=session.get("task_id"), session_id=session["id"])
+            message_id = msg["id"]
+        project = self.db.one("SELECT * FROM projects WHERE id = ?", [session["project_id"]])
+        ws = self.workspaces.main_workspace(project)
+        run = self.create_run(project=project, session=session, workspace=ws, kind=session["kind"], prompt=model_text, task_id=session.get("task_id"),
+                              profile_id=profile_id, model=model, created_by=user_id)
+        self.db.update("messages", message_id, run_id=run["id"])
+        return {"ok": True, "how": "new_run", "run_id": run["id"], "message_id": message_id}
+
+    def _model_text(self, session: dict, user: dict, text: str, current_id: str) -> str:
+        """The current line, preceded by the newest BACKLOG_MAX lines the model
+        was not shown (every human line prefixed `[name (@handle)]`); older ones
+        are counted in one line so the prompt and the delivered flag agree."""
+        where = "WHERE m.session_id = ? AND m.role = 'user' AND m.delivered_to_agent = 0 AND m.id != ?"
+        total = self.db.one(f"SELECT COUNT(*) AS n FROM messages m {where}", [session["id"], current_id])["n"]
+        skipped = self.db.all(f"SELECT m.author, m.blocks, u.display_name, u.handle FROM messages m LEFT JOIN users u ON u.id = m.user_id {where} "
+                              "ORDER BY m.created_at DESC, m.rowid DESC LIMIT ?", [session["id"], current_id, BACKLOG_MAX])
+        out = ""
+        if skipped:
+            lines = [(human_prefix(m) if m.get("handle") else f"[{m['author'] or '?'}] ")
+                     + " ".join(b.get("text", "") for b in (m["blocks"] or []) if b.get("type") == "text") for m in reversed(skipped)]
+            if total > len(skipped):
+                lines.insert(0, f"[... {total - len(skipped)} earlier messages omitted]")
+            out = BACKLOG_HEADER + "\n" + "\n".join(lines) + "\n\n"
+            self.db.execute("UPDATE messages SET delivered_to_agent = 1 WHERE session_id = ? AND role = 'user' AND delivered_to_agent = 0 AND id != ?",
+                            [session["id"], current_id])
+        return out + human_prefix(user) + text
+
+    def _mention_humans(self, user: dict, conv: dict, text: str) -> None:
+        if not self.notify:
+            return
+        names = mentioned_names(text)
+        if not names:
+            return
+        link = f"?p={conv['project_id']}&s={conv['session_id']}" if conv["kind"] == "session" else f"?area=chat&c={conv['id']}"
+        for m in self.teams.conv_members(conv["id"]):
+            if m["member_kind"] == "user" and m["member_id"] != user["id"] and (m.get("handle") or "").lower() in names:
+                self.notify.send(m["member_id"], "mention", f"{user['display_name']} 在「{conv['title']}」里 @ 了你", text[:200],
+                                 actor_id=user["id"], conversation_id=conv["id"], project_id=conv.get("project_id"), link=link)
+
+    def _notify_artifact(self, run: dict, art: dict) -> None:
+        if not self.notify or not art.get("ok"):
+            return
+        conv = self.teams.conv_of_session(run["session_id"])
+        if not conv:
+            return
+        ident = self.room.identity(run)
+        self.notify.send_many([m["member_id"] for m in self.teams.conv_members(conv["id"]) if m["member_kind"] == "user"], "artifact",
+                              f"{ident['agent_name'] or 'agent'} 提交了成果「{art.get('title') or art.get('kind')}」",
+                              project_id=run["project_id"], conversation_id=conv["id"], link=f"?p={run['project_id']}&s={run['session_id']}")
 
     # ---- restart reconciliation --------------------------------------------
     def reconcile(self) -> list[dict]:
@@ -304,11 +439,12 @@ class RunManager:
     # ---- worker lifecycle (used by API and by the main agent's tools) ------
     def spawn_worker(self, project: dict, title: str, instructions: str, *, isolation: str = "worktree",
                      depends_on: list[str] | None = None, profile_id: str | None = None, edit_mode: str = "exclusive",
-                     workspace_id: str | None = None, model: str | None = None) -> dict:
+                     workspace_id: str | None = None, model: str | None = None, created_by: str | None = None,
+                     members: list[str] | None = None) -> dict:
         t = now()
         task = self.db.insert("tasks", {"id": new_id("task"), "project_id": project["id"], "title": title, "description": instructions,
                                         "kind": "worker", "parent_task_id": None, "depends_on": depends_on or [], "review_status": "unreviewed",
-                                        "merge_status": "unmerged", "workspace_id": None, "created_at": t, "updated_at": t})
+                                        "merge_status": "unmerged", "workspace_id": None, "created_at": t, "updated_at": t, "created_by": created_by})
         if workspace_id:
             ws = self.workspaces.get(workspace_id)
         elif isolation == "main":
@@ -322,25 +458,28 @@ class RunManager:
         self.db.update("tasks", task["id"], workspace_id=ws["id"])
         task["workspace_id"] = ws["id"]
         try:
-            return self._start_worker(project, task, ws, title, instructions, profile_id, model=model)
+            return self._start_worker(project, task, ws, title, instructions, profile_id, model=model, created_by=created_by, members=members)
         except Exception:
             self.db.execute("DELETE FROM tasks WHERE id = ?", [task["id"]])
             self.workspaces.remove(ws, project)
             raise
 
     def _start_worker(self, project: dict, task: dict, ws: dict, title: str, instructions: str, profile_id: str | None,
-                      model: str | None = None) -> dict:
+                      model: str | None = None, created_by: str | None = None, members: list[str] | None = None) -> dict:
         t = now()
         session = self.db.insert("sessions", {"id": new_id("ses"), "project_id": project["id"], "task_id": task["id"], "kind": "worker",
-                                              "title": title, "cc_session_id": None, "created_at": t})
+                                              "title": title, "cc_session_id": None, "created_at": t, "created_by": created_by, "agent_name": title})
+        # a worker session is strict: creator + agent (+ whoever the spawner was already sharing with)
+        self.teams.ensure_session_conversation(session, created_by, members)
         self.bus.emit("task", self.task_view(task), project_id=project["id"], task_id=task["id"])
         self.bus.emit("session", session, project_id=project["id"], task_id=task["id"], session_id=session["id"])
         run = self.create_run(project=project, session=session, workspace=ws, kind="worker", prompt=instructions,
-                              task_id=task["id"], profile_id=profile_id, model=model)
+                              task_id=task["id"], profile_id=profile_id, model=model, created_by=created_by)
         return {"task": self.task_view(task), "session": session, "run": run, "workspace": ws}
 
-    def retry_task(self, task: dict, prompt: str | None, profile_id: str | None) -> dict:
-        """A new attempt in the same session and workspace. Old runs stay."""
+    def retry_task(self, task: dict, prompt: str | None, profile_id: str | None, actor: dict | None = None) -> dict:
+        """A new attempt in the same session and workspace, run as the person
+        who asked (their key, their defaults). Old runs stay."""
         project = self.db.one("SELECT * FROM projects WHERE id = ?", [task["project_id"]])
         session = self.db.one("SELECT * FROM sessions WHERE task_id = ? ORDER BY created_at DESC LIMIT 1", [task["id"]])
         ws = self.workspaces.get(task["workspace_id"])
@@ -352,10 +491,13 @@ class RunManager:
         if d.get("available") and d.get("status"):
             context = ("\n\n[Workbench] Previous attempt left these uncommitted changes in your workspace (git status):\n"
                        + d["status"] + "\nReview them before continuing; do not redo work that is already done.")
+        if prompt and actor:
+            prompt = human_prefix(actor) + prompt        # a human typed it: same prefix as every other human line
         text = (prompt or f"Continue the task \"{task['title']}\". The previous attempt ended with status '{last['status'] if last else 'none'}'"
                 + (f": {last['error']}" if last and last.get("error") else "") + ".") + context
+        creator = actor["id"] if actor else task.get("created_by")
         run = self.create_run(project=project, session=session, workspace=ws, kind="worker", prompt=text, task_id=task["id"],
-                              profile_id=profile_id or (last["profile_id"] if last else None))
+                              profile_id=profile_id or self.inheritable_profile(last["profile_id"] if last else None, creator), created_by=creator)
         return {"ok": True, "run": run}
 
     # ---- tool servers ------------------------------------------------------
@@ -366,8 +508,10 @@ class RunManager:
               "Returns the task id. Use depends_on to chain tasks.",
               _schema({"title": "string", "instructions": "string", "depends_on": {"type": "array", "items": {"type": "string"}}}, ["title", "instructions"]))
         async def spawn_worker(args):
+            conv = mgr.teams.conv_of_session(run["session_id"])
+            members = [m["member_id"] for m in mgr.teams.conv_members(conv["id"]) if m["member_kind"] == "user"] if conv else []
             r = mgr.spawn_worker(project, args["title"], args["instructions"], depends_on=args.get("depends_on") or [],
-                                 profile_id=run["profile_id"])
+                                 profile_id=run["profile_id"], created_by=run.get("created_by"), members=members)
             return _ok({"task_id": r["task"]["id"], "run_id": r["run"]["id"], "workspace": r["workspace"]["path"], "branch": r["workspace"]["branch"]})
 
         @tool("list_workers", "List worker tasks in this project with their real status", {})
@@ -401,7 +545,9 @@ class RunManager:
         @tool("submit_artifact", "Show the human a result. kind: markdown|image|html|file|diff. content for markdown/html; path (workspace-relative) for image/file/html; diff needs neither.",
               _schema({"kind": "string", "title": "string", "content": "string", "path": "string"}, ["kind", "title"]))
         async def submit_artifact(args):
-            return _ok(mgr.artifacts.submit(run, args["kind"], args["title"], content=args.get("content"), path=args.get("path")))
+            art = mgr.artifacts.submit(run, args["kind"], args["title"], content=args.get("content"), path=args.get("path"))
+            mgr._notify_artifact(run, {**art, "title": args["title"]})
+            return _ok(art)
 
         return create_sdk_mcp_server("workbench", "1.0.0", [spawn_worker, list_workers, message_worker, cancel_worker, worker_transcript, submit_artifact])
 
@@ -439,7 +585,9 @@ class RunManager:
         @tool("submit_artifact", "Show the human a result. kind: markdown|image|html|file|diff. content for markdown/html; path (workspace-relative) for image/file/html; diff needs neither.",
               _schema({"kind": "string", "title": "string", "content": "string", "path": "string"}, ["kind", "title"]))
         async def submit_artifact(args):
-            return _ok(mgr.artifacts.submit(run, args["kind"], args["title"], content=args.get("content"), path=args.get("path")))
+            art = mgr.artifacts.submit(run, args["kind"], args["title"], content=args.get("content"), path=args.get("path"))
+            mgr._notify_artifact(run, {**art, "title": args["title"]})
+            return _ok(art)
 
         @tool("start_devserver", "Start a dev server the human can open (managed by the workbench: port, health, logs). Returns its URL.",
               _schema({"title": "string", "command": "string", "port": "integer"}, ["title", "command"]))
@@ -456,6 +604,14 @@ class RunManager:
 
         return create_sdk_mcp_server("room", "1.0.0", [room_claim, room_release, room_state, room_broadcast, room_inbox, room_handoff,
                                                        submit_artifact, start_devserver])
+
+
+_STATUS_ZH = {"succeeded": "完成", "failed": "失败", "cancelled": "已取消", "exhausted": "用尽额度", "interrupted": "被中断"}
+
+
+def human_prefix(user: dict) -> str:
+    """AO's `[from <id>]` rule with the id replaced by the person."""
+    return f"[{user['display_name']} (@{user['handle']})] "
 
 
 def _schema(props: dict, required: list[str]) -> dict:

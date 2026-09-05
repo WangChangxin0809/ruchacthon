@@ -8,8 +8,8 @@
 ## What it does
 
 CC Workbench is a local, multi-agent development workbench whose only
-execution engine is Claude Code. A human talks to a **main agent** in a
-session; the main agent (or the human directly) spawns **workers**, each a
+execution engine is Claude Code. People sign in (a team per deployment, invite links to join), and a human
+talks to a **main agent** in a project's session; the main agent (or the human directly) spawns **workers**, each a
 separate `claude` process in its own git worktree. Workers hand back
 **artifacts** (Markdown, images, HTML, files, diffs, managed dev servers); the
 human reviews them and feedback flows back into the worker's own session.
@@ -37,8 +37,12 @@ per-run config, never rewriting the user's global CC config).
 | Run | one execution attempt inside a session | `status`, `outcome`, `attempt_no`, `profile_snapshot`, `pid` |
 | Artifact | something a run hands to a human, versioned per task | `kind`, `version`, `status` |
 | Room: Claim / RoomMessage / Decision | who owns which path; overlap/broadcast/handoff; the human's ruling | `expires_at`, `blocked_run_id` |
-| ProviderProfile | which endpoint a run talks to | `kind`, `models`, `credential_ref` (a name in the write-only secret store, never a value) |
-| Channel / ChatMessage | people talking to people; no model reads it | `author`; a message can be handed to the work area as a Task |
+| ProviderProfile | which endpoint a run talks to; owned by a person, optionally shared with a team | `kind`, `models`, `credential_ref` (a name in the write-only secret store, never a value), `owner_id`, `shared` |
+| User / AuthSession | a person; a bearer token's sha256 with a sliding expiry | `handle` (what `@handle` means), `is_admin`, `prefs` |
+| Team / TeamMember / Invite | one deployment is one organisation; a team is who can see each other | `role` (`owner\|admin\|member`), invite `token`, `max_uses`, `expires_at` |
+| Conversation / ConversationMember | a DM, a group, or the member list of a session — one table for all three | `kind`, `session_id`, `dm_key`, `agent_reply` (`auto\|always\|mention\|never`) |
+| ChatMessage | people talking to people in a DM or group; a message can be handed to the work area as a Task or, via `@`, to an agent member | `author` (snapshot), `user_id` |
+| Notification | one row per person per thing worth their attention, delivered as a private event | `kind`, `read_at` |
 
 Task status on the board is **derived**, never stored: latest run status
 (`queued/running/needs_input/failed/cancelled/interrupted/exhausted`), then
@@ -56,6 +60,10 @@ in `in_review`; only a human moves it past that.
 | `backend/app/workspaces.py` | worktree / dir workspaces, diff, merge | git |
 | `backend/app/providers.py`, `secrets_store.py`, `ccconfig.py` | Provider Profiles + compat check; write-only 0600 secret store; CC install/config/login discovery | `cc_runner` (env) |
 | `backend/app/shared_edit.py` | EXPERIMENTAL CRDT merge for `Write` in shared-edit workspaces | `runs.py` hooks |
+| `backend/app/auth.py` | passwords, bearer tokens, the principal behind a request (user, bootstrap token, single-user) | `main.py` middleware |
+| `backend/app/teams.py` | teams, invites, conversations, membership visibility, the @ rule and the event filter | `runs.send_human`, `main.py`, routes |
+| `backend/app/notifications.py` | notification rows + private `notification` events | `events.py` |
+| `backend/app/routes_auth.py`, `routes_conversations.py` | APIRouters: auth/users/admin/teams/invites/notifications; DMs, groups, session conversations | `teams.py`, `runs.py` |
 | `backend/app/db.py`, `events.py`, `main.py` | SQLite schema; seq'd event bus; FastAPI + WebSocket | frontend |
 | `frontend/src/` | React workbench laid out like Agent Orchestrator: sidebar (projects → sessions), home (start actions, 需要你, recent projects), per-project kanban board, session view (timeline + composer + inspector: summary/preview/files), Room drawer, people-only chat, dsh-style settings | `/api`, `/ws` |
 | `scripts/gates/check_escalation_decisions.py` | the merge gate: no pending decisions | `workbench.db` |
@@ -78,6 +86,11 @@ in `in_review`; only a human moves it past that.
    strings pass through `providers.scrub`.
 6. The event log's `seq` is monotonic and every persisted event is replayable
    from any point; stream deltas are the only unpersisted events.
+7. Authorship is server-derived from the auth principal (`request.state.user`);
+   no request body carries an author or actor. Rows keep a display-name
+   snapshot next to the `user_id`, and what a person may read — sessions,
+   messages, events over `/ws` and `since=` replay — is decided by conversation
+   membership (`teams.py`), never by the client.
 
 ## What is not enforced by code
 

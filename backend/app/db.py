@@ -13,6 +13,7 @@ import os
 import sqlite3
 import threading
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -79,6 +80,38 @@ CREATE TABLE IF NOT EXISTS chat_channels (
 CREATE TABLE IF NOT EXISTS chat_messages (
   id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, author TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS chat_messages_channel ON chat_messages(channel_id, created_at);
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY, handle TEXT NOT NULL UNIQUE COLLATE NOCASE, display_name TEXT NOT NULL, email TEXT,
+  password_hash TEXT NOT NULL, is_admin INTEGER NOT NULL DEFAULT 0, prefs TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL, last_seen_at TEXT);
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, user_agent TEXT,
+  created_at TEXT NOT NULL, expires_at TEXT NOT NULL, last_used_at TEXT);
+CREATE INDEX IF NOT EXISTS auth_sessions_user ON auth_sessions(user_id);
+CREATE TABLE IF NOT EXISTS teams (
+  id TEXT PRIMARY KEY, slug TEXT NOT NULL UNIQUE, name TEXT NOT NULL, owner_id TEXT NOT NULL,
+  default_profile_id TEXT, default_model TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS team_members (
+  team_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member', joined_at TEXT NOT NULL,
+  PRIMARY KEY (team_id, user_id));
+CREATE TABLE IF NOT EXISTS invites (
+  id TEXT PRIMARY KEY, team_id TEXT NOT NULL, token TEXT NOT NULL UNIQUE, created_by TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'member', max_uses INTEGER, uses INTEGER NOT NULL DEFAULT 0,
+  expires_at TEXT NOT NULL, revoked_at TEXT, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS conversations (
+  id TEXT PRIMARY KEY, kind TEXT NOT NULL, team_id TEXT, project_id TEXT, session_id TEXT UNIQUE,
+  title TEXT NOT NULL, owner_id TEXT, dm_key TEXT UNIQUE, is_default INTEGER NOT NULL DEFAULT 0,
+  agent_reply TEXT NOT NULL DEFAULT 'auto', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS conversations_team ON conversations(team_id, kind);
+CREATE TABLE IF NOT EXISTS conversation_members (
+  conversation_id TEXT NOT NULL, member_kind TEXT NOT NULL, member_id TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'member', added_by TEXT, joined_at TEXT NOT NULL, last_read_at TEXT,
+  muted INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (conversation_id, member_kind, member_id));
+CREATE INDEX IF NOT EXISTS conversation_members_user ON conversation_members(member_kind, member_id);
+CREATE TABLE IF NOT EXISTS notifications (
+  id TEXT PRIMARY KEY, user_id TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '',
+  link TEXT, conversation_id TEXT, project_id TEXT, actor_id TEXT, read_at TEXT, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS notifications_inbox ON notifications(user_id, read_at, created_at);
 """
 
 # Columns added after the first release: (table, column, DDL type/default).
@@ -87,7 +120,42 @@ MIGRATIONS = [
     ("provider_profiles", "models", "TEXT NOT NULL DEFAULT '[]'"),
     ("provider_profiles", "credential_ref", "TEXT"),
     ("provider_profiles", "display_name", "TEXT"),
+    # multi-user (docs/decisions/0005): ids next to the free-text author snapshots
+    ("messages", "user_id", "TEXT"),
+    ("messages", "delivered_to_agent", "INTEGER NOT NULL DEFAULT 1"),
+    ("chat_messages", "user_id", "TEXT"),
+    ("sessions", "created_by", "TEXT"),
+    ("sessions", "agent_name", "TEXT"),
+    ("tasks", "created_by", "TEXT"),
+    ("runs", "created_by", "TEXT"),
+    ("projects", "team_id", "TEXT"),
+    ("projects", "created_by", "TEXT"),
+    ("artifact_feedback", "user_id", "TEXT"),
+    ("decisions", "actor_id", "TEXT"),
+    ("events", "user_id", "TEXT"),
+    ("provider_profiles", "owner_id", "TEXT"),
+    ("provider_profiles", "team_id", "TEXT"),
+    ("provider_profiles", "shared", "INTEGER NOT NULL DEFAULT 0"),
 ]
+
+SCHEMA_VERSION = 2
+
+
+def migrate_data(db: "Database") -> None:
+    """Idempotent data migration, keyed by settings.schema_version. v2: every
+    legacy chat channel and session gets a conversation row (channels keep
+    their ch_ id, so chat_messages.channel_id needs no rewrite), every session
+    gets its agent as a member, and sessions learn the name people @ them by."""
+    if int(db.setting("schema_version", 1) or 1) >= SCHEMA_VERSION:
+        return
+    db.execute("INSERT OR IGNORE INTO conversations (id, kind, title, owner_id, is_default, created_at, updated_at) "
+               "SELECT id, 'group', name, NULL, CASE WHEN name = '全员' THEN 1 ELSE 0 END, created_at, created_at FROM chat_channels")
+    db.execute("INSERT OR IGNORE INTO conversations (id, kind, project_id, session_id, title, created_at, updated_at) "
+               "SELECT 'conv_' || substr(id, 5), 'session', project_id, id, title, created_at, created_at FROM sessions")
+    db.execute("INSERT OR IGNORE INTO conversation_members (conversation_id, member_kind, member_id, role, joined_at) "
+               "SELECT c.id, 'agent', s.id, 'agent', s.created_at FROM sessions s JOIN conversations c ON c.session_id = s.id")
+    db.execute("UPDATE sessions SET agent_name = CASE kind WHEN 'main' THEN '主 agent' ELSE title END WHERE agent_name IS NULL")
+    db.set_setting("schema_version", SCHEMA_VERSION)
 
 
 def now() -> str:
@@ -113,6 +181,21 @@ class Database:
                 have = {r[1] for r in self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
                 if col not in have:
                     self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {ddl}")
+            migrate_data(self)
+
+    @contextmanager
+    def transaction(self):
+        """Hold the lock and one BEGIN IMMEDIATE .. COMMIT around a multi-statement
+        change that must not interleave with another thread's (first-user
+        registration decides "am I first" and inserts in one step)."""
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                yield
+            except BaseException:
+                self._conn.execute("ROLLBACK")
+                raise
+            self._conn.execute("COMMIT")
 
     def setting(self, key: str, default: Any = None) -> Any:
         row = self.one("SELECT value FROM settings WHERE key = ?", [key])
@@ -155,7 +238,7 @@ class Database:
             self._conn.close()
 
 
-JSON_COLUMNS = {"blocks", "payload", "meta", "profile_snapshot", "extra_env", "compat", "depends_on", "subject", "models"}
+JSON_COLUMNS = {"blocks", "payload", "meta", "profile_snapshot", "extra_env", "compat", "depends_on", "subject", "models", "prefs"}
 
 
 def _enc(v: Any) -> Any:

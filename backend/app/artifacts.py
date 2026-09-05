@@ -106,9 +106,10 @@ class ArtifactStore:
     def get(self, art_id: str) -> dict | None:
         return self.db.one("SELECT * FROM artifacts WHERE id = ?", [art_id])
 
-    def record_feedback(self, art: dict, author: str, verdict: str, text: str) -> dict:
+    def record_feedback(self, art: dict, author: str, verdict: str, text: str, user_id: str | None = None) -> dict:
         fb = self.db.insert("artifact_feedback", {"id": new_id("fb"), "artifact_id": art["id"], "version": art["version"], "author": author,
-                                                  "verdict": verdict, "text": text, "delivered_run_id": None, "delivery": "pending", "created_at": now()})
+                                                  "verdict": verdict, "text": text, "delivered_run_id": None, "delivery": "pending", "created_at": now(),
+                                                  "user_id": user_id})
         if verdict in ("approve", "request_changes") and art["task_id"]:
             self.db.update("tasks", art["task_id"], review_status="approved" if verdict == "approve" else "changes_requested", updated_at=now())
             self.bus.emit("task", self.db.one("SELECT * FROM tasks WHERE id = ?", [art["task_id"]]), project_id=art["project_id"], task_id=art["task_id"])
