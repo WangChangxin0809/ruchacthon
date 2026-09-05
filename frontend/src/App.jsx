@@ -11,7 +11,7 @@ import SessionView, { DecisionCard } from "./SessionView";
 import Settings from "./Settings";
 import Sidebar from "./Sidebar";
 import { useWorkbench } from "./store";
-import { Avatar, Button, EmptyState, I, Spinner, fmtTime } from "./ui";
+import { Avatar, Button, EmptyState, I, Spinner, fmtTime, useToast } from "./ui";
 
 const TERMINAL = ["succeeded", "failed", "cancelled", "interrupted", "exhausted"];
 
@@ -36,6 +36,7 @@ export default function App() {
   const [showRoom, setShowRoom] = useState(false);
   const [showInbox, setShowInbox] = useState(false);
   const [session, setSession] = useState(null);
+  const [toastNode, toast] = useToast();
   const [profileData, setProfileData] = useState({ profiles: [], default_profile_id: null, default_model: null });
 
   useEffect(() => {
@@ -75,6 +76,14 @@ export default function App() {
     } else wb.setSessionId(sid);
     setView("session");
   }, [wb, mainSession]);
+  // the one thing a locked card can do: ask the owner in (ADR 0004 §2)
+  const requestJoin = useCallback(async (t) => {
+    try {
+      const r = await api.requestJoin(t.session_id);
+      toast(r.already_member ? "你已经在这个会话里了" : r.already_sent ? "已经申请过了，等 owner 处理" : "已经告诉 owner 了");
+      if (r.already_member) wb.refetch("tasks");
+    } catch (e) { toast(e.message, "red"); }
+  }, [wb, toast]);
   const openTask = useCallback((t) => {
     if (t.member === false) return;
     if (t.project_id && t.project_id !== wb.projectId) { wb.setSessionId(null); wb.setProjectId(t.project_id); }
@@ -120,7 +129,7 @@ export default function App() {
         )}
         {view === "board" && wb.projectId && (
           <Board tasks={wb.tasks} room={wb.room} onOpen={openTask} onNewTask={() => setShowNewTask(true)} onOpenMain={() => openSession("main")}
-            mainLive={mainLive} onBell={() => setShowRoom(true)} project={project} />
+            mainLive={mainLive} onBell={() => setShowRoom(true)} project={project} onRequestJoin={requestJoin} />
         )}
         {view === "session" && wb.projectId && (
           <SessionView session={session} task={taskFull} messages={wb.messages} streams={wb.streams} runStatus={wb.runStatus}
@@ -140,6 +149,7 @@ export default function App() {
         <NewTaskDialog projectId={wb.projectId} tasks={wb.tasks} profileData={profileData} agents={wb.agents} onClose={() => setShowNewTask(false)}
           onCreated={(r) => { setShowNewTask(false); wb.refetch("tasks"); wb.refetch("sessions"); if (r?.session?.id) { wb.setSessionId(r.session.id); setView("session"); } }} />
       )}
+      {toastNode}
     </div>
   );
 }

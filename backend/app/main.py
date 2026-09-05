@@ -181,6 +181,18 @@ def _session_for(user: dict, session_id: str) -> dict:
     return s
 
 
+def _session_owner(user: dict, session: dict, what: str) -> None:
+    """Who a run is charged to and what it may do is the owner's call: one
+    person per session decides the model and the agent definition, everybody
+    else in it talks to the agent (docs/decisions/0004 §2)."""
+    conv = teams.conv_of_session(session["id"])
+    if conv is None:                                  # legacy session, no conversation: nothing to own
+        return
+    if user.get("is_admin") or conv["owner_id"] == user["id"]:
+        return
+    raise HTTPException(403, f"只有会话 owner 能{what}")
+
+
 def _task_member(user: dict, task: dict) -> dict:
     s = db.one("SELECT * FROM sessions WHERE task_id = ? ORDER BY created_at DESC LIMIT 1", [task["id"]])
     if s:
@@ -407,6 +419,32 @@ def get_session(session_id: str, user: dict = Depends(me)):
             "owner_id": conv["owner_id"] if conv else None}
 
 
+class JoinRequestIn(BaseModel):
+    note: str = ""
+
+
+@app.post("/api/sessions/{session_id}/join-request")
+def request_to_join(session_id: str, body: JoinRequestIn, user: dict = Depends(me)):
+    """The one thing a non-member may do with a locked card: ask its owner in.
+    Nothing about the session comes back -- only whether the ask was sent."""
+    sess = _get("sessions", session_id)
+    _project_for(user, sess["project_id"])
+    conv = teams.conv_of_session(session_id)
+    if conv is None or teams.is_member(user, conv["id"]):
+        return {"ok": True, "already_member": True}
+    if not conv["owner_id"]:
+        raise HTTPException(409, "这个会话没有 owner，找项目管理员加你")
+    # one open ask per person per session: the owner gets a reminder, not a queue
+    dup = db.one("SELECT 1 FROM notifications WHERE user_id = ? AND kind = 'join_request' AND conversation_id = ? "
+                 "AND actor_id = ? AND read_at IS NULL", [conv["owner_id"], conv["id"], user["id"]])
+    if dup:
+        return {"ok": True, "already_sent": True}
+    notify.send(conv["owner_id"], "join_request", f"{user['display_name']} 想加入「{conv['title']}」",
+                (body.note or "").strip()[:200], actor_id=user["id"], conversation_id=conv["id"],
+                project_id=sess["project_id"], session_id=session_id)
+    return {"ok": True, "sent": True}
+
+
 class SessionPatch(BaseModel):
     agent_definition_id: str | None = None
     title: str | None = None
@@ -419,6 +457,7 @@ def patch_session(session_id: str, body: SessionPatch, user: dict = Depends(me))
     s = _session_for(user, session_id)
     fields: dict = {}
     if body.agent_definition_id is not None:
+        _session_owner(user, s, "换 agent 定义")
         if runs.active_run(session_id):
             raise HTTPException(409, "会话正在运行，等它结束再换")
         fields["agent_definition_id"] = agents.check_for_kind(user, body.agent_definition_id, s["kind"])["id"]
@@ -448,6 +487,8 @@ async def post_message(session_id: str, body: MessageIn, user: dict = Depends(me
     s = _session_for(user, session_id)
     if not body.text.strip():
         raise HTTPException(400, "empty")
+    if body.profile_id or body.model:
+        _session_owner(user, s, "换模型")
     return await runs.send_human(s, user, body.text, profile_id=body.profile_id, model=body.model)
 
 
@@ -516,7 +557,12 @@ class RetryIn(BaseModel):
 
 @app.post("/api/tasks/{task_id}/retry")
 def retry_task(task_id: str, body: RetryIn, user: dict = Depends(me)):
-    r = runs.retry_task(_task_member(user, _get("tasks", task_id)), body.prompt, body.profile_id, actor=user)
+    t = _task_member(user, _get("tasks", task_id))
+    if body.profile_id:
+        sess = db.one("SELECT * FROM sessions WHERE task_id = ? ORDER BY created_at DESC LIMIT 1", [task_id])
+        if sess:
+            _session_owner(user, sess, "换模型")
+    r = runs.retry_task(t, body.prompt, body.profile_id, actor=user)
     if not r.get("ok"):
         raise HTTPException(409, r["error"])
     return r

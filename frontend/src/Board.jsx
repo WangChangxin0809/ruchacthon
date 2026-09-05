@@ -4,7 +4,7 @@ import { ARCHIVE_STATUSES, AvatarStack, Dot, I, LANES, STATUS_LABEL, fmtRel, ton
 // AO's board: four delivery lanes, cards that show task + agent + branch +
 // status + activity together, archive off to the side. Positions are derived
 // from the task view the server computes; nothing here is stored.
-export default function Board({ tasks, room, onOpen, onNewTask, onOpenMain, mainLive, onBell, project }) {
+export default function Board({ tasks, room, onOpen, onNewTask, onOpenMain, mainLive, onBell, project, onRequestJoin }) {
   const [archive, setArchive] = useState(false);
   const pending = room?.pending_decisions?.length || 0;
   const archived = tasks.filter((t) => ARCHIVE_STATUSES.includes(t.status));
@@ -37,7 +37,7 @@ export default function Board({ tasks, room, onOpen, onNewTask, onOpenMain, main
                 <div className="row px-4 h-11 border-b border-[var(--border)] shrink-0"><Dot color={lane.color} /><span className="text-[13px] font-medium" style={{ color: lane.color }}>{lane.label}</span><span className="ml-auto text-[12px] text-[var(--muted)]">{items.length}</span></div>
                 <div className="flex-1 overflow-y-auto p-3 space-y-3 bg-[var(--bg)]">
                   {items.length === 0 && <div className="text-[11px] text-[var(--faint)] text-center pt-6">{lane.empty || "空"}</div>}
-                  {items.map((t) => <Card key={t.id} t={t} room={room} onOpen={onOpen} />)}
+                  {items.map((t) => <Card key={t.id} t={t} room={room} onOpen={onOpen} onRequestJoin={onRequestJoin} />)}
                 </div>
               </div>
             );
@@ -45,7 +45,7 @@ export default function Board({ tasks, room, onOpen, onNewTask, onOpenMain, main
           {archive && (
             <div className="flex-1 min-w-[240px] flex flex-col min-h-0">
               <div className="row px-4 h-11 border-b border-[var(--border)] shrink-0"><Dot color="var(--merged)" /><span className="text-[13px] font-medium" style={{ color: "var(--merged)" }}>已合并</span><span className="ml-auto text-[12px] text-[var(--muted)]">{archived.length}</span></div>
-              <div className="flex-1 overflow-y-auto p-3 space-y-3 bg-[var(--bg)]">{archived.map((t) => <Card key={t.id} t={t} room={room} onOpen={onOpen} />)}</div>
+              <div className="flex-1 overflow-y-auto p-3 space-y-3 bg-[var(--bg)]">{archived.map((t) => <Card key={t.id} t={t} room={room} onOpen={onOpen} onRequestJoin={onRequestJoin} />)}</div>
             </div>
           )}
         </div>
@@ -55,7 +55,7 @@ export default function Board({ tasks, room, onOpen, onNewTask, onOpenMain, main
   );
 }
 
-function Card({ t, room, onOpen }) {
+function Card({ t, room, onOpen, onRequestJoin }) {
   const claims = (room?.claims || []).filter((c) => c.run_id === t.latest_run?.id).length;
   const when = t.latest_run?.ended_at || t.latest_run?.started_at || t.updated_at;
   const cost = t.latest_run?.cost_usd;
@@ -66,10 +66,15 @@ function Card({ t, room, onOpen }) {
   // is on it, never a word of what was said.
   if (locked) {
     return (
-      <div className="card w-full text-left opacity-70 cursor-not-allowed" title="你不在这个任务的会话里，看不到内容">
+      <div className="card w-full text-left opacity-70" title="你不在这个任务的会话里，看不到内容">
         <div className="px-3 pt-3 pb-2">
           <div className="row"><I.lock className="w-3.5 h-3.5 text-[var(--faint)]" /><span className="text-[13px] font-semibold truncate text-[var(--muted)]">{t.title}</span></div>
-          <div className="row mt-1.5 text-[11px] text-[var(--faint)]">你不在这个会话里</div>
+          <div className="row mt-1.5 text-[11px] text-[var(--faint)]">
+            你不在这个会话里
+            {t.session_id && onRequestJoin && (
+              <button className="text-[var(--accent)] hover:underline" onClick={() => onRequestJoin(t)}>申请加入</button>
+            )}
+          </div>
         </div>
         <div className="row px-3 py-2 border-t border-[var(--border)] text-[11px]">
           <span className="font-medium" style={{ color: toneOf(t.status) }}>{footer}</span>

@@ -75,6 +75,7 @@ export const api = {
   createInvite: (id, role) => post(`/api/teams/${id}/invites`, { role }),
   revokeInvite: (teamId, inviteId) => del(`/api/teams/${teamId}/invites/${inviteId}`),
   invite: (token) => get(`/api/invites/${token}`),
+  requestJoin: (sessionId, note = "") => post(`/api/sessions/${sessionId}/join-request`, { note }),
   acceptInvite: (token) => post(`/api/invites/${token}/accept`, {}),
 
   // ---- notifications

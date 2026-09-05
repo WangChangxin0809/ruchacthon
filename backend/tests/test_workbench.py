@@ -753,6 +753,21 @@ def http_tests() -> None:
         ov = c.get("/api/overview", headers=H(tb)).json()
         assert ov["tasks"] and "description" not in ov["tasks"][0] and "latest_run" not in ov["tasks"][0]
         assert "do it" in c.get(f"/api/projects/{p['id']}/tasks", headers=H(ta)).json()[0]["description"]
+        # the one thing the locked card can do: ask the owner in, once
+        jr = c.post(f"/api/sessions/{wses}/join-request", json={}, headers=H(tb)).json()
+        assert jr["sent"] and c.post(f"/api/sessions/{wses}/join-request", json={}, headers=H(tb)).json()["already_sent"]
+        asked = [n for n in c.get("/api/notifications", headers=H(ta)).json()["items"] if n["kind"] == "join_request"]
+        assert len(asked) == 1 and asked[0]["link"]["session_id"] == wses and "Bob" in asked[0]["title"]
+        assert c.post(f"/api/sessions/{wses}/join-request", json={}, headers=H(ta)).json()["already_member"]
+        # model and agent definition are the owner's call; the others just talk to the agent
+        wconv = m.teams.conv_of_session(wses)["id"]
+        c.post(f"/api/conversations/{wconv}/members", json={"user_id": bob_id}, headers=H(ta))
+        assert c.post(f"/api/sessions/{wses}/messages", json={"text": "hi"}, headers=H(tb)).status_code == 200
+        r = c.post(f"/api/sessions/{wses}/messages", json={"text": "hi", "model": "claude-opus-5"}, headers=H(tb))
+        assert r.status_code == 403 and "owner" in r.json()["detail"], r.text
+        assert c.patch(f"/api/sessions/{wses}", json={"agent_definition_id": "worker"}, headers=H(tb)).status_code == 403
+        assert c.patch(f"/api/sessions/{wses}", json={"agent_definition_id": "worker"}, headers=H(ta)).status_code != 403, "the owner may rebind (409 while a run is live)"
+        c.delete(f"/api/conversations/{wconv}/members/{bob_id}", headers=H(ta))
         wrun = t.json()["run"]
         art = m.artifacts.submit(m.db.one("SELECT * FROM runs WHERE id = ?", [wrun["id"]]), "markdown", "Summary", content="SECRET-ARTIFACT")
         assert c.get(f"/api/projects/{p['id']}/artifacts", headers=H(tb)).json() == [] and c.get(f"/api/artifacts/{art['artifact_id']}", headers=H(tb)).status_code == 403

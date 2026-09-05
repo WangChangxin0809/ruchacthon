@@ -120,6 +120,9 @@ export default function SessionView({ session, task, messages, streams, runStatu
     return out;
   }, [profileData]);
   const [profileId, model] = choice.split("|");
+  // one session, one person deciding what it runs on: everyone else talks to
+  // the agent, and the server refuses their overrides anyway
+  const isOwner = !session?.owner_id || session.owner_id === me?.id || !!me?.is_admin;
 
   useEffect(() => { if (!stuck) bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length, streaming, stuck]);
   useEffect(() => { if (task?.id) api.taskDiff(task.id).then(setDiff).catch(() => setDiff(null)); else setDiff(null); }, [task?.id, task?.latest_run?.status, artifacts?.length]);
@@ -129,7 +132,7 @@ export default function SessionView({ session, task, messages, streams, runStatu
   // The server decides whether the agent is actually woken (the @ rule), and
   // says so; a message it kept for the people only must not look delivered.
   async function send(text) {
-    const r = await api.send(session.id, text, profileId || undefined, model || undefined);
+    const r = await api.send(session.id, text, isOwner ? profileId || undefined : undefined, isOwner ? model || undefined : undefined);
     setNote(r?.delivered === false ? r.note || "已发给会话里的人，agent 没有被叫到。" : "");
     return r;
   }
@@ -152,7 +155,7 @@ export default function SessionView({ session, task, messages, streams, runStatu
           <button onClick={onNewTask} className="btn btn-ghost btn-sm" title="新任务"><I.plus className="w-4 h-4" /></button>
           <span className="text-[11px] text-[var(--muted)] mono truncate">{task?.branch ? task.branch : session.kind === "main" ? "项目目录" : task?.isolation === "main" ? "项目目录" : ""}</span>
           <div className="flex-1" />
-          <AgentPicker session={session} agents={agents} live={active} onChanged={() => refetch("sessions")} />
+          <AgentPicker session={session} agents={agents} live={active} canEdit={isOwner} onChanged={() => refetch("sessions")} />
           <button className="btn btn-ghost btn-sm" onClick={() => setMembers(true)} title="会话成员">
             <AvatarStack people={(session.members || []).map((m) => ({ id: m.member_id, name: m.name || m.display_name, handle: m.handle, agent: m.member_kind === "agent" }))} size={18} max={3} />
             <span className="text-[12px] text-[var(--muted)]">{session.member_count || 0}</span>
@@ -216,11 +219,19 @@ export default function SessionView({ session, task, messages, streams, runStatu
             : `以 ${me?.display_name || "你"} 的身份发送`)}
           extra={(
             <div className="row gap-2 pb-2">
-              <button className="btn btn-ghost btn-xs" onClick={onOpenSettings} title="配置模型"><I.wallet className="w-3.5 h-3.5" />模型</button>
-              <select className="text-[12px] bg-transparent hover:bg-[var(--subtle)] rounded px-1.5 h-6 max-w-[260px]" value={choice}
-                onChange={(e) => { setChoice(e.target.value); try { localStorage.setItem("wb.model", e.target.value); } catch { /* ignore */ } }} title="模型">
-                {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </select>
+              {isOwner ? (
+                <>
+                  <button className="btn btn-ghost btn-xs" onClick={onOpenSettings} title="配置模型"><I.wallet className="w-3.5 h-3.5" />模型</button>
+                  <select className="text-[12px] bg-transparent hover:bg-[var(--subtle)] rounded px-1.5 h-6 max-w-[260px]" value={choice}
+                    onChange={(e) => { setChoice(e.target.value); try { localStorage.setItem("wb.model", e.target.value); } catch { /* ignore */ } }} title="模型">
+                    {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </>
+              ) : (
+                <span className="row gap-1 text-[11px] text-[var(--faint)]" title="模型和 agent 定义由会话 owner 决定">
+                  <I.lock className="w-3.5 h-3.5" />模型由会话 owner 决定
+                </span>
+              )}
               <div className="flex-1" />
               <Badge tone="outline" title="这个 agent 定义允许的操作范围">{permissionLabel(session.agent_definition?.permission_mode)}</Badge>
             </div>
@@ -372,7 +383,7 @@ function SessionMembers({ session, me, onClose, onChanged }) {
 
 // Which agent definition this session runs as. Rebinding takes effect on the
 // next run, so the server refuses while one is live and so do we.
-function AgentPicker({ session, agents, live, onChanged }) {
+function AgentPicker({ session, agents, live, canEdit, onChanged }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const bound = session.agent_definition || {};
@@ -383,6 +394,9 @@ function AgentPicker({ session, agents, live, onChanged }) {
     catch (e) { setErr(e.message); }
     finally { setBusy(false); }
   };
+  if (!canEdit) {
+    return <span className="row gap-1 text-[12px] text-[var(--muted)]" title="agent 定义由会话 owner 决定"><I.bot className="w-3.5 h-3.5" />{bound.name || "内置"}</span>;
+  }
   return (
     <span className="row gap-1" title={live ? "会话正在运行，等它结束再换" : bound.missing ? "原来的定义已被删除，现在用的是内置的" : "这个会话用哪种 agent"}>
       {bound.missing && <I.info className="w-3.5 h-3.5 text-amber-500" />}

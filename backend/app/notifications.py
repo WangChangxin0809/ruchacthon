@@ -17,7 +17,7 @@ from urllib.parse import parse_qs
 from .db import Database, new_id, now
 from .events import EventBus
 
-KINDS = {"mention", "dm", "member_added", "invite_accepted", "decision_pending", "artifact", "run_finished", "feedback", "question"}
+KINDS = {"mention", "dm", "member_added", "join_request", "invite_accepted", "decision_pending", "artifact", "run_finished", "feedback", "question"}
 LINK_KEYS = ("project_id", "session_id", "conversation_id", "decision_id")
 _QUERY_KEYS = {"p": "project_id", "s": "session_id", "c": "conversation_id", "d": "decision_id"}
 
