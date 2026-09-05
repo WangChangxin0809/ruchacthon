@@ -1,96 +1,73 @@
-#!/usr/bin/env python3
-"""Exercise the FastAPI app's REST surface directly (no server process, no
-network) with Starlette's TestClient. Covers what
-backend/tests/test_agent_loop_fake.py doesn't: HTTP status codes, request/
-response shapes, and the escalate -> decide -> gate-passes round trip.
-
-`app.main` builds `room`/`subagents`/`main_chat` as process-global
-singletons (see backend/README.md on why the MCP server and the dashboard
-share one `RoomState`), so `reset_state()` below clears them in place
-between tests instead of re-importing the module -- `importlib.reload`
-would rebind `app.main`'s own names to a fresh `RoomState()` but leave
-`app.mcp_tools`'s already-imported reference pointing at the old one, and
-those two must always be the same object for the MCP bridge to mean
-anything (see backend/README.md, "Why one process").
-
-Run: python3 backend/tests/test_api.py
-"""
+"""HTTP surface tests. D1 requires Claude Code to be the only execution
+harness -- test_no_self_written_llm_client below is the machine-checkable
+form of that rule, not just a comment."""
 from __future__ import annotations
 
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
-from starlette.testclient import TestClient  # noqa: E402
-
-import app.main as main_module  # noqa: E402
-
-client = TestClient(main_module.app)
+import asyncio
+from pathlib import Path
 
 
-def reset_state() -> None:
-    room = main_module.room
-    room._claims.clear()  # noqa: SLF001 -- test-only direct reset, not a public API
-    room._escalations.clear()  # noqa: SLF001
-    room._agents.clear()  # noqa: SLF001
-    room._previews.clear()  # noqa: SLF001
-    room._log.clear()  # noqa: SLF001
-    room._docs.clear()  # noqa: SLF001
-    main_module.subagents.subagents.clear()
-    main_module.main_chat.history.clear()
-
-
-def test_health():
-    reset_state()
+def test_health(client):
     r = client.get("/api/health")
     assert r.status_code == 200
-    body = r.json()
-    assert body["ok"] is True
-    assert body["llm_configured"] is False, "no LLM_API_KEY should be set in the test environment"
+    assert r.json()["ok"] is True
 
 
-def test_agents_and_escalations_start_empty():
-    reset_state()
-    assert client.get("/api/agents").json() == []
-    assert client.get("/api/escalations").json() == []
-    assert client.get("/api/previews").json() == []
-    assert client.get("/api/subagents").json() == []
+def test_no_self_written_llm_client_imports():
+    app_dir = Path(__file__).resolve().parent.parent / "app"
+    offenders = []
+    for path in app_dir.rglob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        if "import anthropic" in text or "import openai" in text:
+            offenders.append(str(path))
+    assert not offenders, f"self-written LLM client imports found in: {offenders}"
+
+    requirements = (Path(__file__).resolve().parent.parent / "requirements.txt").read_text()
+    assert "anthropic" not in requirements
+    assert "openai" not in requirements
 
 
-def test_chat_without_key_fails_clearly_not_a_500():
-    reset_state()
-    r = client.post("/api/chat", json={"message": "hello"})
-    assert r.status_code == 200, "a missing key is an ok:false body, not an HTTP error"
-    body = r.json()
-    assert body["ok"] is False
-    assert "LLM_API_KEY" in body["error"]
-
-
-def test_spawn_subagent_without_key_reports_failed_not_500():
-    reset_state()
-    r = client.post("/api/subagents", json={"owner_id": "zhangsan", "worktree_id": "wt-1",
-                                             "task": "do something"})
+def test_project_and_task_round_trip(client):
+    r = client.post("/api/projects", json={"name": "demo", "root_path": "/tmp/x", "vcs": "none"})
     assert r.status_code == 200
-    actor_id = r.json()["actor_id"]
+    project = r.json()
 
-    subs = client.get("/api/subagents").json()
-    assert len(subs) == 1
-    assert subs[0]["actor_id"] == actor_id
-    assert subs[0]["status"] == "failed"
-    assert "LLM_API_KEY" in subs[0]["error"]
+    r = client.post(f"/api/tasks?project_id={project['id']}", json={"title": "do the thing"})
+    assert r.status_code == 200
+    task = r.json()
+    assert task["review"] == "unreviewed"
 
-    # A failed subagent must still be visible on the board, not silently
-    # dropped -- the dashboard's whole job is surfacing exactly this.
-    agents = client.get("/api/agents").json()
-    assert any(a["agent_id"] == actor_id and a["status"] == "needs_input" for a in agents)
+    r = client.get(f"/api/tasks/{task['id']}")
+    assert r.status_code == 200
+    assert r.json()["runs"] == []
 
 
-def test_escalation_decide_round_trip_unblocks_the_gate():
-    reset_state()
-    room = main_module.room
+def test_send_message_runs_fake_executor_end_to_end(client):
+    project = client.post("/api/projects", json={"name": "demo2", "root_path": "/tmp/y", "vcs": "none"}).json()
+    task = client.post(f"/api/tasks?project_id={project['id']}", json={"title": "demo task"}).json()
 
-    import asyncio
+    r = client.post(f"/api/tasks/{task['id']}/messages",
+                     json={"message": "hello", "executor": "fake", "options": {"scenario": "success"}})
+    assert r.status_code == 200
+    run = r.json()
+    assert run["status"] == "queued"
+
+    import time
+    for _ in range(20):
+        got = client.get(f"/api/runs/{run['id']}").json()
+        if got["status"] == "succeeded":
+            break
+        time.sleep(0.05)
+    assert got["status"] == "succeeded"
+
+    events = client.get(f"/api/runs/{run['id']}/events").json()
+    assert [e["type"] for e in events][0] == "run.started"
+    assert events[-1]["type"] == "run.finished"
+
+
+def test_escalation_decide_round_trip_unblocks_the_gate(client):
+    from app.room.state import room
+
     asyncio.run(room.claim("shared.py", "agent-a", "zhangsan", "wt-a", "team"))
     result = asyncio.run(room.claim("shared.py", "agent-b", "lisi", "wt-b", "team"))
     assert result["conflict"] is True
@@ -108,39 +85,22 @@ def test_escalation_decide_round_trip_unblocks_the_gate():
     assert client.get("/api/escalations").json() == [], "approving must clear it from the pending queue"
 
 
-def test_decide_unknown_escalation_id_is_a_clean_failure_not_500():
-    reset_state()
-    r = client.post("/api/escalations/does-not-exist/decide",
-                     json={"decision": "approve", "reason": "", "actor": "human"})
-    assert r.status_code == 200
-    assert r.json()["ok"] is False
+def test_ws_reconnect_with_since_seq_has_no_loss_or_duplication(client, bus, project):
+    with client.websocket_connect(f"/ws?project_id={project['id']}&since_seq=0") as ws:
+        asyncio.run(bus.publish(project["id"], "task.created", {"n": 1}))
+        asyncio.run(bus.publish(project["id"], "task.created", {"n": 2}))
+        first = ws.receive_json()
+        second = ws.receive_json()
+    seen_before_disconnect = [first["seq"], second["seq"]]
 
+    # More events land while nobody is connected.
+    asyncio.run(bus.publish(project["id"], "task.created", {"n": 3}))
+    asyncio.run(bus.publish(project["id"], "task.created", {"n": 4}))
 
-TESTS = [
-    test_health,
-    test_agents_and_escalations_start_empty,
-    test_chat_without_key_fails_clearly_not_a_500,
-    test_spawn_subagent_without_key_reports_failed_not_500,
-    test_escalation_decide_round_trip_unblocks_the_gate,
-    test_decide_unknown_escalation_id_is_a_clean_failure_not_500,
-]
+    with client.websocket_connect(f"/ws?project_id={project['id']}&since_seq={seen_before_disconnect[-1]}") as ws:
+        third = ws.receive_json()
+        fourth = ws.receive_json()
 
-
-def main() -> int:
-    failures = []
-    for t in TESTS:
-        try:
-            t()
-            print(f"  ok  {t.__name__}")
-        except Exception as exc:  # noqa: BLE001 -- report and keep going
-            failures.append((t.__name__, exc))
-            print(f"FAIL  {t.__name__}: {exc}")
-    if failures:
-        print(f"\n{len(failures)} of {len(TESTS)} test(s) failed")
-        return 1
-    print(f"\nall {len(TESTS)} API test(s) passed")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+    all_seqs = seen_before_disconnect + [third["seq"], fourth["seq"]]
+    assert all_seqs == sorted(set(all_seqs)) == list(range(all_seqs[0], all_seqs[0] + 4)), \
+        "reconnect with since_seq must replay exactly what was missed -- no gap, no duplicate"

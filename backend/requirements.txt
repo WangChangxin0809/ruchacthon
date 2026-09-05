@@ -4,6 +4,7 @@ pycrdt
 mcp
 websockets
 python-multipart
-anthropic
-openai
 httpx
+claude-agent-sdk
+pytest
+pytest-asyncio

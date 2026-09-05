@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from mcp.server.mcpserver import MCPServer as FastMCP
 
-from .room_state import room
+from .state import room
 
 mcp = FastMCP("agentroom")
 
