@@ -178,10 +178,10 @@ export default function SessionView({ session, task, messages, streams, runStatu
               if (it.kind === "user") {
                 const mine = it.userId && it.userId === me?.id;
                 return (
-                  <div key={it.id} className={`flex gap-2 pt-2 ${mine ? "justify-end" : ""}`}>
-                    {!mine && <Avatar name={it.author} handle={it.handle} size={26} agent={!it.userId} />}
+                  <div key={it.id} className={`flex gap-2 pt-2 ${mine ? "flex-row-reverse" : ""}`}>
+                    <Avatar name={mine ? me?.display_name || it.author : it.author} handle={mine ? me?.handle : it.handle} size={26} agent={!mine && !it.userId} />
                     <div className={`max-w-[85%] rounded-xl px-4 py-3 text-[13.5px] whitespace-pre-wrap ${mine ? "bg-[var(--accent)] text-white" : "bg-[var(--subtle)]"}`}>
-                      {!mine && <div className="text-[11px] text-[var(--muted)] mb-1">{it.author}</div>}{it.text}
+                      <div className={`text-[11px] mb-1 ${mine ? "text-white/70 text-right" : "text-[var(--muted)]"}`}>{mine ? me?.display_name || it.author : it.author}</div>{it.text}
                       <div className={`text-[10px] mt-1 text-right ${mine ? "text-white/60" : "text-[var(--faint)]"}`}>{fmtTime(it.at)}</div>
                     </div>
                   </div>

@@ -48,7 +48,8 @@ workers on the server. Server access: [connect-to-aliyun-server.md](connect-to-a
    data from before the upgrade is claimed by it (if the data dir was last
    used with `WORKBENCH_SINGLE_USER=1`, that person takes over the `local`
    account instead). Everyone else joins through an invite link from
-   ⚙ → 团队.
+   ⚙ → 团队 — following the link or pasting it (or the bare code) into
+   注册 → 邀请码 both work.
 
    Criterion: `curl -s http://<host>:8787/api/auth` on a fresh instance shows
    `"needs_deploy_token": true`, and a registration without the token is 403.

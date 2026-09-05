@@ -5,29 +5,48 @@ import { Button, Field, I, Spinner } from "./ui";
 // The only screen an anonymous visitor sees. Three shapes, same card:
 // first user (becomes the administrator), invited user (?invite=<token>),
 // and everyone else, who needs an invite link to register.
+// An invite reaches this page two ways: as ?invite=<token> in the link, or
+// pasted into the field below -- people forward the whole URL as often as the
+// bare token, so both are accepted.
+function inviteTokenIn(text) {
+  const t = (text || "").trim();
+  if (!t) return "";
+  const m = t.match(/[?&#]invite=([^&\s]+)/);
+  return m ? decodeURIComponent(m[1]) : t.split(/\s+/)[0];
+}
+
 export default function Login({ authState, onSignedIn }) {
-  const inviteToken = new URLSearchParams(window.location.search).get("invite") || "";
+  const urlInvite = new URLSearchParams(window.location.search).get("invite") || "";
+  const [pasted, setPasted] = useState("");
+  const inviteToken = urlInvite || inviteTokenIn(pasted);
   const [invite, setInvite] = useState(null);
-  const [tab, setTab] = useState(authState?.registration_open || authState?.needs_deploy_token || inviteToken ? "register" : "login");
+  const [tab, setTab] = useState(authState?.registration_open || authState?.needs_deploy_token || urlInvite ? "register" : "login");
   const [handle, setHandle] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [inviteError, setInviteError] = useState("");
   const first = !!authState?.registration_open && !inviteToken;
   const needsDeployToken = !!authState?.needs_deploy_token && !inviteToken;
+  const needsInvite = tab === "register" && !first && !needsDeployToken && !urlInvite;
 
   // authState arrives one tick after mount, so the tab follows it rather than
   // being decided before the server has said which of the three shapes this is
   useEffect(() => {
     if (!authState) return;
-    setTab(authState.registration_open || authState.needs_deploy_token || inviteToken ? "register" : "login");
+    setTab(authState.registration_open || authState.needs_deploy_token || urlInvite ? "register" : "login");
   }, [authState]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!inviteToken) return;
-    api.invite(inviteToken).then(setInvite).catch((e) => setError(e.message));
-  }, [inviteToken]);
+    if (!inviteToken) { setInvite(null); return; }
+    let live = true;
+    const id = setTimeout(() => {
+      api.invite(inviteToken).then((r) => live && setInvite(r)).catch((e) => live && (setInvite(null), setInviteError(e.message)));
+    }, urlInvite ? 0 : 400);   // typed codes settle before we ask the server
+    setInviteError("");
+    return () => { live = false; clearTimeout(id); };
+  }, [inviteToken, urlInvite]);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -48,7 +67,7 @@ export default function Login({ authState, onSignedIn }) {
     }
   };
 
-  const canSubmit = handle.trim().length >= 2 && password.length >= 8 && !busy;
+  const canSubmit = handle.trim().length >= 2 && password.length >= 8 && !busy && !(needsInvite && !inviteToken);
 
   return (
     <div className="h-screen flex items-center justify-center bg-[var(--bg)] p-6">
@@ -63,9 +82,11 @@ export default function Login({ authState, onSignedIn }) {
 
         <form onSubmit={submit} className="card p-5 shadow-[var(--shadow-md)]">
           {invite && (
-            <div className="mb-4 rounded-md border border-[var(--border)] bg-[var(--subtle)] px-3 py-2.5">
-              <div className="text-[13px] font-medium">{invite.inviter_name || "有人"} 邀请你加入「{invite.team_name}」</div>
-              <div className="hint mt-0.5">注册或登录后自动加入，身份是{invite.role === "admin" ? "管理员" : "成员"}。</div>
+            <div className={`mb-4 rounded-md border px-3 py-2.5 ${invite.valid ? "border-[var(--border)] bg-[var(--subtle)]" : "border-red-200 bg-red-50"}`}>
+              <div className="text-[13px] font-medium">{invite.invited_by || "有人"} 邀请你加入「{invite.team?.name}」</div>
+              <div className={`mt-0.5 ${invite.valid ? "hint" : "text-[12px] text-red-700"}`}>
+                {invite.valid ? `注册或登录后自动加入，身份是${invite.role === "admin" ? "管理员" : "成员"}。` : invite.reason || "这个邀请已经不能用了。"}
+              </div>
             </div>
           )}
           {first && (
@@ -112,10 +133,15 @@ export default function Login({ authState, onSignedIn }) {
             </Field>
           </div>
 
-          {error && <div className="mt-3 text-[12px] text-red-600 bg-red-50 border border-red-200 rounded-md px-2.5 py-2">{error}</div>}
-          {tab === "register" && !first && !needsDeployToken && !inviteToken && !authState?.registration_open && (
-            <div className="mt-3 hint">注册需要邀请链接，找团队里的人要一个。</div>
+          {needsInvite && (
+            <div className="mt-3">
+              <Field label="邀请码" hint="注册需要邀请，找团队里的人要一个。整条链接和光邀请码都行。">
+                <input className="input" value={pasted} placeholder="…/?invite=abc123 或 abc123" onChange={(e) => setPasted(e.target.value)} />
+              </Field>
+              {inviteToken && inviteError && <div className="mt-1 text-[12px] text-red-600">{inviteError}</div>}
+            </div>
           )}
+          {error && <div className="mt-3 text-[12px] text-red-600 bg-red-50 border border-red-200 rounded-md px-2.5 py-2">{error}</div>}
 
           <Button kind="primary" className="w-full mt-4 h-9" type="submit" disabled={!canSubmit}>
             {busy ? <Spinner /> : tab === "register" ? (first ? "创建管理员账号" : "注册并进入") : "登录"}
