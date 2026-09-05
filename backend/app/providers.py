@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 
+from . import provider_presets as presets
 from .db import Database, new_id, now
 from .secrets_store import SecretStore
 
@@ -34,9 +35,31 @@ KINDS: dict[str, dict] = {
                "note": "注入 CLAUDE_CODE_USE_VERTEX=1；ADC 凭据来自服务器环境（CLOUD_ML_REGION / ANTHROPIC_VERTEX_PROJECT_ID 写在 extra_env）"},
     "foundry": {"label": "Microsoft Foundry", "credential": "ANTHROPIC_FOUNDRY_API_KEY", "builtin": True, "needs_base_url": True,
                 "note": "注入 CLAUDE_CODE_USE_FOUNDRY=1 和 ANTHROPIC_FOUNDRY_BASE_URL"},
+    "preset": {"label": "预置服务商", "credential": "ANTHROPIC_AUTH_TOKEN", "builtin": False, "needs_base_url": False,
+               "note": "从内置的服务商列表里选一个，只需要填自己的密钥。说 OpenAI 协议的服务商会自动经过本机转换代理。"},
 }
 
+# api_format values the runtime can actually drive today; the rest are listed
+# in the picker but cannot be selected (ADR 0004 §5).
+RUNNABLE_FORMATS = ("anthropic", "openai_chat")
+
 DEFAULT_MODELS = ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"]
+
+def _openai_base(url: str) -> str:
+    """cc-switch's presets store the base Claude Code is pointed at, and Claude
+    Code appends `/v1/messages` itself. An OpenAI-chat upstream needs the same
+    `/v1` in front of `/chat/completions`, so add it when the preset's URL
+    stops short of a version segment (NVIDIA NIM: `.../nvidia.com` ->
+    `.../nvidia.com/v1`)."""
+    url = (url or "").rstrip("/")
+    last = url.rsplit("/", 1)[-1]
+    if len(last) > 1 and last[0] == "v" and last[1:].isdigit():
+        return url
+    for suffix in presets.KNOWN_COMPAT_SUFFIXES:
+        if url.endswith(suffix):
+            return url
+    return url + "/v1"
+
 
 _SAFE_EXTRA = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
 _SECRETISH = re.compile(r"(^|_)(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)($|_)", re.I)
@@ -120,7 +143,8 @@ class ProviderProfiles:
 
     def create(self, name: str, kind: str, *, display_name: str | None = None, base_url: str | None = None, model: str | None = None,
                models: list[str] | None = None, credential_ref: str | None = None, extra_env: dict | None = None,
-               secret: str | None = None, owner: dict | None = None, team_id: str | None = None, shared: bool = False) -> dict:
+               secret: str | None = None, owner: dict | None = None, team_id: str | None = None, shared: bool = False,
+               preset: str | None = None, model_map: dict | None = None) -> dict:
         if kind not in KINDS:
             raise ValueError(f"kind must be one of {sorted(KINDS)}")
         if not re.match(r"^[a-z0-9][a-z0-9-]{0,63}$", name):
@@ -129,6 +153,8 @@ class ProviderProfiles:
             raise ValueError("这个 Provider ID 已被占用")
         if KINDS[kind]["needs_base_url"] and not base_url:
             raise ValueError("这类提供方需要 API 地址")
+        preset_row = self._preset_or_raise(kind, preset)
+        model_map = self._check_model_map(model_map)
         extra_env = self._check_extra(extra_env or {})
         models = [m for m in (models or []) if m] or ([model] if model else [])
         model = model or (models[0] if models else None)
@@ -144,12 +170,13 @@ class ProviderProfiles:
                                                    "base_url": base_url or None, "model": model, "models": models,
                                                    "credential_env": KINDS[kind]["credential"], "credential_ref": ref,
                                                    "extra_env": extra_env, "compat": {}, "created_at": now(),
+                                                   "preset": preset_row.name if preset_row else None, "model_map": model_map,
                                                    "owner_id": owner["id"] if owner else None, "team_id": team_id, "shared": 1 if shared else 0})
         return self.public(row, owner)
 
     def update(self, pid: str, *, display_name: str | None = None, base_url: str | None = None, model: str | None = None,
                models: list[str] | None = None, extra_env: dict | None = None, secret: str | None = None,
-               shared: bool | None = None) -> dict:
+               shared: bool | None = None, model_map: dict | None = None) -> dict:
         p = self.get(pid)
         if not p:
             raise KeyError(pid)
@@ -166,6 +193,8 @@ class ProviderProfiles:
             fields["extra_env"] = self._check_extra(extra_env)
         if shared is not None:
             fields["shared"] = 1 if shared else 0
+        if model_map is not None:
+            fields["model_map"] = self._check_model_map(model_map)
         if secret:
             if not p["credential_ref"]:
                 raise ValueError("这类提供方不接受密钥")
@@ -207,7 +236,84 @@ class ProviderProfiles:
         d["accepts_secret"] = bool(KINDS.get(p["kind"], {}).get("credential"))
         d["kind_label"] = KINDS.get(p["kind"], {}).get("label", p["kind"])
         d["models"] = p.get("models") or ([p["model"]] if p.get("model") else [])
+        d["model_map"] = p.get("model_map") or {}
+        pre = self.preset_of(p)
+        d["preset"] = p.get("preset")
+        d["api_format"] = pre.api_format if pre else "anthropic"
+        d["needs_routing"] = self.needs_routing(p)
+        d["runnable"] = (pre.api_format in RUNNABLE_FORMATS) if pre else True
+        if pre:
+            d["kind_label"] = pre.name
+            d["website_url"], d["api_key_url"] = pre.website_url, pre.api_key_url
+            d["preset_base_url"] = pre.base_url
         return d
+
+    # ---- presets (cc-switch's list as data) ----------------------------------
+    def _preset_or_raise(self, kind: str, name: str | None):
+        if kind != "preset":
+            return None
+        pre = presets.by_name(name or "")
+        if pre is None:
+            raise ValueError("没有这个预置服务商")
+        if pre.api_format not in RUNNABLE_FORMATS:
+            raise ValueError(f"{pre.name} 用的是 {pre.api_format} 协议，暂不支持")
+        if pre.requires_oauth:
+            raise ValueError(f"{pre.name} 需要 OAuth 登录，不能只填密钥")
+        return pre
+
+    def _check_model_map(self, m: dict | None) -> dict:
+        """role/alias -> upstream model id. '*' is the catch-all; values are
+        opaque vendor strings, so only their shape is checked."""
+        if m is None:
+            return {}
+        out = {}
+        for k, v in m.items():
+            if not isinstance(k, str) or not isinstance(v, str):
+                raise ValueError("模型映射必须是字符串到字符串")
+            k, v = k.strip(), v.strip()
+            if k and v:
+                out[k[:64]] = v[:200]
+        return out
+
+    def preset_of(self, p: dict | None):
+        return presets.by_name(p.get("preset") or "") if p and p.get("kind") == "preset" else None
+
+    def needs_routing(self, p: dict | None) -> bool:
+        """True when Claude Code cannot talk to this vendor directly and the
+        local conversion proxy has to sit in between."""
+        pre = self.preset_of(p)
+        return bool(pre and pre.api_format == "openai_chat")
+
+    def upstream_for(self, p: dict, model: str | None = None) -> dict | None:
+        """What the proxy needs to forward this profile's traffic: the vendor
+        base URL, the key, and the alias -> model map Claude Code's own model
+        names are translated through. None when no proxy is involved."""
+        pre = self.preset_of(p)
+        if not pre or not self.needs_routing(p):
+            return None
+        key = self.secrets.get(self._store_ref(p), self.env_allowed(p)) or ""
+        chosen = model or p.get("model")
+        role_map = {k: v for k, v in presets.model_role_map(pre.env).items() if v}
+        model_map = {**role_map, **(p.get("model_map") or {})}
+        if chosen:
+            model_map.setdefault("*", chosen)
+        return {"base_url": _openai_base(p.get("base_url") or pre.base_url), "api_key": key,
+                "model_map": model_map, "api_format": "openai_chat", "credential_present": bool(key)}
+
+    def alias_env(self, p: dict, model: str | None = None) -> dict[str, str]:
+        """The model names Claude Code should ask for. They are aliases the
+        proxy maps, so they must be keys of the map, not vendor ids."""
+        up = self.upstream_for(p, model) or {}
+        m = up.get("model_map") or {}
+        chosen = model or p.get("model")
+        env = {}
+        for var, role in (("ANTHROPIC_DEFAULT_HAIKU_MODEL", "haiku"), ("ANTHROPIC_DEFAULT_SONNET_MODEL", "sonnet"),
+                          ("ANTHROPIC_DEFAULT_OPUS_MODEL", "opus"), ("ANTHROPIC_DEFAULT_FABLE_MODEL", "fable")):
+            if m.get(role) or m.get("*"):
+                env[var] = role if m.get(role) else (chosen or m["*"])
+        if chosen:
+            env["ANTHROPIC_MODEL"] = chosen
+        return env
 
     # ---- what a run gets ------------------------------------------------------
     def env_for(self, p: dict | None, model: str | None = None) -> tuple[dict[str, str], dict]:
@@ -223,6 +329,15 @@ class ProviderProfiles:
             return env, snap
         env: dict[str, str] = {}
         kind = p["kind"]
+        pre = self.preset_of(p)
+        if pre is not None and not self.needs_routing(p):
+            # an Anthropic-protocol preset is exactly cc-switch's env block with
+            # the key filled in; the proxy is not involved
+            for k, v in presets.apply_template_values(pre.env, None).items():
+                if k != pre.api_key_field and v:
+                    env[k] = v
+            if p.get("base_url"):
+                env["ANTHROPIC_BASE_URL"] = p["base_url"]
         if kind == "anthropic_compatible_gateway":
             env["ANTHROPIC_BASE_URL"] = p["base_url"] or ""
         if kind == "bedrock":
@@ -235,7 +350,7 @@ class ProviderProfiles:
         if chosen:
             env["ANTHROPIC_MODEL"] = chosen
         env.update(p["extra_env"] or {})
-        target = KINDS[kind]["credential"]
+        target = pre.api_key_field if pre is not None else KINDS[kind]["credential"]
         cred_missing = False
         if target:
             val = self.secrets.get(self._store_ref(p), self.env_allowed(p))
@@ -248,6 +363,7 @@ class ProviderProfiles:
             else:
                 cred_missing = True
         snap = {"profile_id": p["id"], "name": p["name"], "kind": kind, "base_url": p["base_url"], "model": chosen,
+                "preset": p.get("preset"), "routed": self.needs_routing(p),
                 "credential_ref": p.get("credential_ref"), "credential_present": not cred_missing,
                 "env_keys": sorted(k for k in env if not _SECRETISH.search(k))}
         return env, snap

@@ -48,11 +48,12 @@ BACKLOG_MAX = 30
 class RunManager:
     def __init__(self, db: Database, bus: EventBus, workspaces: WorkspaceManager, room: Room,
                  artifacts: ArtifactStore, devservers: DevServerManager, profiles: ProviderProfiles,
-                 teams: Teams | None = None, notify=None, agents: AgentDefinitions | None = None):
+                 teams: Teams | None = None, notify=None, agents: AgentDefinitions | None = None, gateway=None):
         self.db, self.bus, self.workspaces, self.room = db, bus, workspaces, room
         self.artifacts, self.devservers, self.profiles = artifacts, devservers, profiles
         self.teams = teams or Teams(db, bus)
         self.agents = agents or AgentDefinitions(db, bus, self.teams)
+        self.gateway = gateway
         self.notify = notify
         self.live: dict[str, CCRun] = {}
         self.tasks: dict[str, asyncio.Task] = {}
@@ -121,6 +122,8 @@ class RunManager:
                 outcome = await cc.start(lambda t, p: self._on_event(run_id, t, p))
             finally:
                 self.live.pop(run_id, None)
+                if self.gateway is not None:
+                    self.gateway.revoke(run_id)
             self._finish(run_id, cc, outcome)
 
     async def _wait_dependencies(self, run: dict) -> bool:
@@ -153,6 +156,9 @@ class RunManager:
         profile = self.profiles.get(run["profile_id"]) if run["profile_id"] else None
         model = (run.get("profile_snapshot") or {}).get("model") or d.get("model") or os.environ.get("WORKBENCH_MODEL") or None
         env, _ = self.profiles.env_for(profile, model)
+        setting_sources = ["user", "project", "local"]
+        if profile is not None and self.gateway is not None and self.profiles.needs_routing(profile):
+            env, setting_sources = self._proxy_env(run, profile, model, env)
         hooks = {"PostToolUse": [HookMatcher(matcher=None, hooks=[self._heartbeat_hook(run)])]}
 
         shared = run["kind"] == "worker" and ws["edit_mode"] == "shared"
@@ -173,7 +179,25 @@ class RunManager:
                        mcp_servers=servers, system_prompt_append=prompt, hooks=hooks,
                        allowed_tools=list(d.get("allowed_tools") or []), disallowed_tools=list(d.get("disallowed_tools") or []),
                        permission_mode=d.get("permission_mode") or "acceptEdits", max_turns=d.get("max_turns"),
-                       max_budget_usd=d.get("max_budget_usd"), effort=d.get("effort"))
+                       max_budget_usd=d.get("max_budget_usd"), effort=d.get("effort"), setting_sources=setting_sources)
+
+    def _proxy_env(self, run: dict, profile: dict, model: str | None, env: dict) -> tuple[dict, list[str]]:
+        """Point this run at a loopback route that speaks Anthropic Messages to
+        Claude Code and the vendor's own protocol upstream. The route token is
+        what the child process gets; the vendor key stays in this process.
+
+        `user` settings are dropped from the sources: ~/.claude/settings.json
+        has an `env` block that Claude Code assigns over the launch
+        environment, so the machine's own login would win over the key the
+        person picked for this run."""
+        upstream = self.profiles.upstream_for(profile, model)
+        if not upstream or not upstream.get("credential_present"):
+            return env, ["user", "project", "local"]
+        url, token = self.gateway.issue(run["id"], upstream)
+        routed = {k: v for k, v in env.items() if not k.startswith("ANTHROPIC_") or k in ("ANTHROPIC_CUSTOM_HEADERS",)}
+        routed.update({"ANTHROPIC_BASE_URL": url, "ANTHROPIC_AUTH_TOKEN": token, "ANTHROPIC_API_KEY": "",
+                       "CLAUDE_CODE_OAUTH_TOKEN": "", **self.profiles.alias_env(profile, model)})
+        return routed, ["project", "local"]
 
     def _run_context(self, run: dict, session: dict, ws: dict, shared: bool, d: dict) -> str:
         """The few facts that are true of this run only, appended to the role

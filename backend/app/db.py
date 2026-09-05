@@ -144,6 +144,9 @@ MIGRATIONS = [
     ("provider_profiles", "owner_id", "TEXT"),
     ("provider_profiles", "team_id", "TEXT"),
     ("provider_profiles", "shared", "INTEGER NOT NULL DEFAULT 0"),
+    # a profile built from one of cc-switch's presets (docs/decisions/0004 §5)
+    ("provider_profiles", "preset", "TEXT"),
+    ("provider_profiles", "model_map", "TEXT NOT NULL DEFAULT '{}'"),
     # agent definitions (docs/decisions/0006): which definition a session is bound to, which one a run actually used
     ("sessions", "agent_definition_id", "TEXT"),
     ("runs", "agent_definition_id", "TEXT"),
@@ -262,7 +265,7 @@ class Database:
 
 
 JSON_COLUMNS = {"blocks", "payload", "meta", "profile_snapshot", "extra_env", "compat", "depends_on", "subject", "models", "prefs",
-                "allowed_tools", "disallowed_tools", "mcp_servers", "link"}
+                "allowed_tools", "disallowed_tools", "mcp_servers", "link", "model_map"}
 
 
 def _enc(v: Any) -> Any:

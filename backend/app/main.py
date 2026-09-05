@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import ccconfig, routes_agents, routes_auth, routes_conversations
+from . import ccconfig, routes_agents, routes_auth, routes_conversations, routes_providers
 from .agents import AgentDefinitions
 from .artifacts import ArtifactStore
 from .auth import Auth, admin, bearer_of, me
@@ -35,6 +35,7 @@ from .devservers import DevServerManager
 from .events import EventBus
 from .notifications import Notifier
 from .providers import DEFAULT_MODELS, KINDS as PROVIDER_KINDS, ProviderProfiles, scrub
+from .proxy_gateway import ProxyGateway, mount as mount_proxy
 from .room import Room
 from .runs import RunManager
 from .secrets_store import SecretStore
@@ -48,6 +49,7 @@ room = Room(db, bus)
 artifacts = ArtifactStore(db, bus, workspaces)
 devservers = DevServerManager(db, bus)
 secrets = SecretStore()
+gateway = ProxyGateway()
 profiles = ProviderProfiles(db, secrets)
 notify = Notifier(db, bus)
 teams = Teams(db, bus, notify)
@@ -73,7 +75,8 @@ room.on_decision_pending = _decision_pending
 async def lifespan(app: FastAPI):
     global runs
     bus.bind_loop(asyncio.get_running_loop())
-    runs = RunManager(db, bus, workspaces, room, artifacts, devservers, profiles, teams=teams, notify=notify, agents=agents)
+    runs = RunManager(db, bus, workspaces, room, artifacts, devservers, profiles, teams=teams, notify=notify, agents=agents,
+                      gateway=gateway)
     recovered = runs.reconcile()
     devservers.reconcile_after_restart()
     workspaces.sweep_orphans()
@@ -109,13 +112,19 @@ _PUBLIC_GET = re.compile(r"^/api/invites/[^/]+$")
 class _RedactToken(logging.Filter):
     """uvicorn logs the request line with its query string; the WebSocket and
     artifact-file URLs carry the bearer there (a browser cannot send a header
-    for those), and hard rule 3 says a secret never reaches a log."""
-    _re = re.compile(r"(token=)[^&\s\"]+")
+    for those), and a proxy request carries its route token in the path.
+    Hard rule 3 says a secret never reaches a log."""
+    _res = (re.compile(r"(token=)[^&\s\"]+"), re.compile(r"(/proxy/)wbp_[A-Za-z0-9_-]+"))
+
+    def _scrub(self, text: str) -> str:
+        for r in self._res:
+            text = r.sub(r"\1<redacted>", text)
+        return text
 
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.args, tuple):
-            record.args = tuple(self._re.sub(r"\1<redacted>", a) if isinstance(a, str) else a for a in record.args)
-        record.msg = self._re.sub(r"\1<redacted>", record.msg) if isinstance(record.msg, str) else record.msg
+            record.args = tuple(self._scrub(a) if isinstance(a, str) else a for a in record.args)
+        record.msg = self._scrub(record.msg) if isinstance(record.msg, str) else record.msg
         return True
 
 
@@ -144,6 +153,8 @@ async def _forbidden(request: Request, exc: PermissionError):
 app.include_router(routes_auth.make_router(svc))
 app.include_router(routes_conversations.make_router(svc))
 app.include_router(routes_agents.make_router(svc))
+app.include_router(routes_providers.make_router(svc))
+mount_proxy(app, gateway)
 
 
 def _get(table: str, id_: str) -> dict:
@@ -693,6 +704,8 @@ def list_decisions(project_id: str, user: dict = Depends(me)):
 class ProfileIn(BaseModel):
     name: str                         # provider id, lowercase
     kind: str
+    preset: str | None = None         # a name from GET /api/presets when kind is "preset"
+    model_map: dict[str, str] = {}
     display_name: str | None = None
     base_url: str | None = None
     model: str | None = None
@@ -706,6 +719,7 @@ class ProfileIn(BaseModel):
 
 class ProfilePatch(BaseModel):
     display_name: str | None = None
+    model_map: dict[str, str] | None = None
     base_url: str | None = None
     model: str | None = None
     models: list[str] | None = None
@@ -741,7 +755,7 @@ def create_profile(body: ProfileIn, user: dict = Depends(me)):
     try:
         return profiles.create(body.name, body.kind, display_name=body.display_name, base_url=body.base_url, model=body.model,
                                models=body.models, credential_ref=body.credential_ref, extra_env=body.extra_env, secret=body.secret,
-                               owner=user, team_id=team_id, shared=body.shared)
+                               owner=user, team_id=team_id, shared=body.shared, preset=body.preset, model_map=body.model_map)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -751,7 +765,7 @@ def patch_profile(profile_id: str, body: ProfilePatch, user: dict = Depends(me))
     _profile_editable(user, profile_id)
     try:
         return profiles.update(profile_id, display_name=body.display_name, base_url=body.base_url, model=body.model, models=body.models,
-                               extra_env=body.extra_env, secret=body.secret, shared=body.shared)
+                               extra_env=body.extra_env, secret=body.secret, shared=body.shared, model_map=body.model_map)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
@@ -772,8 +786,8 @@ def delete_profile(profile_id: str, user: dict = Depends(me)):
     return {"ok": True}
 
 
-@app.post("/api/profiles/{profile_id}/check")
-async def check_profile(profile_id: str, user: dict = Depends(me)):
+@app.post("/api/profiles/{profile_id}/deep-check")
+async def deep_check_profile(profile_id: str, user: dict = Depends(me)):
     """Compatibility check: streaming text, a tool call, and a clean failure
     message -- run in a throwaway directory, never persisted as a Run."""
     p = _get("provider_profiles", profile_id)
