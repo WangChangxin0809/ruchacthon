@@ -352,11 +352,46 @@ async def main() -> None:
     assert bus.emit("artifact", {}, project_id=project["id"], run_id=r1["id"])["session_id"] == r1["session_id"]
     assert bus.emit("project", {}, project_id=project["id"])["session_id"] is None
 
+    preview_targets()
     old_schema_migration()
     concurrent_reads()
     deploy_token_gate()
     http_tests()
     print("all workbench assertions passed")
+
+
+def preview_targets() -> None:
+    """What the agent may point the preview pane at (app/preview.py)."""
+    from app import preview
+    with tempfile.TemporaryDirectory() as d:
+        root = Path(d) / "ws"
+        (root / "sub").mkdir(parents=True)
+        (root / "index.html").write_text("<h1>hi</h1>")
+        (root / "sub" / "note.md").write_text("# note")
+        (Path(d) / "secret.txt").write_text("not yours")
+        assert preview.resolve(str(root), "https://example.com/x") == {"kind": "url", "url": "https://example.com/x", "path": None}
+        assert preview.resolve(str(root), "sub/note.md")["path"] == "sub/note.md"
+        assert preview.resolve(str(root), "")["path"] == "index.html", "no target means the entry page"
+        assert preview.resolve(str(root), f"file://{root}/sub/note.md")["path"] == "sub/note.md"
+        for bad in ("../secret.txt", str(Path(d) / "secret.txt"), "sub/../../secret.txt"):
+            try:
+                preview.resolve(str(root), bad)
+                raise AssertionError(f"{bad} escaped the workspace")
+            except preview.PreviewError:
+                pass
+        try:
+            preview.resolve(str(root), "nope.html")
+            raise AssertionError("a missing file must be refused, not stored")
+        except preview.PreviewError:
+            pass
+        (root / "index.html").unlink()
+        assert preview.discover(root) == "sub/note.md", "falls back to the newest page"
+        assert preview.kind_of("a/b.md") == "markdown" and preview.kind_of("x.PNG") == "image" and preview.kind_of("x.zip") == "file"
+        try:
+            preview.resolve(None, "index.html")
+            raise AssertionError("no workspace means URLs only")
+        except preview.PreviewError:
+            pass
 
 
 def concurrent_reads() -> None:
@@ -769,6 +804,24 @@ def http_tests() -> None:
         assert c.patch(f"/api/sessions/{wses}", json={"agent_definition_id": "worker"}, headers=H(ta)).status_code != 403, "the owner may rebind (409 while a run is live)"
         c.delete(f"/api/conversations/{wconv}/members/{bob_id}", headers=H(ta))
         wrun = t.json()["run"]
+        # the agent picks what the pane shows; the file is served only to members
+        wws = m.workspaces.get(m.db.one("SELECT * FROM runs WHERE id = ?", [wrun["id"]])["workspace_id"])
+        Path(wws["path"], "报告.md").write_text("# 结果\n看这里", encoding="utf-8")
+        run_row = m.db.one("SELECT * FROM runs WHERE id = ?", [wrun["id"]])
+        assert m.runs.set_preview(run_row, "报告.md", "结果")["path"] == "报告.md"
+        again = m.runs.set_preview(run_row, "报告.md")
+        assert again["revision"] == 2, "the same file asked for twice still re-navigates"
+        assert not m.runs.set_preview(run_row, "../../../etc/passwd")["ok"], "the workspace is the boundary"
+        pv = c.get(f"/api/sessions/{wses}", headers=H(ta)).json()["preview"]
+        assert pv["path"] == "报告.md" and pv["file_kind"] == "markdown"
+        f = c.get(f"/api/sessions/{wses}/preview/file?path=报告.md", headers=H(ta))
+        assert f.status_code == 200 and "看这里" in f.text and f.headers["content-type"].startswith("text/markdown")
+        assert c.get(f"/api/sessions/{wses}/preview/file?path=报告.md", headers=H(tb)).status_code == 403
+        assert c.get(f"/api/sessions/{wses}/preview/file?path=../../etc/passwd", headers=H(ta)).status_code == 404
+        assert c.get(f"/api/sessions/{wses}/preview/file?path=报告.md&token={ta}").status_code == 200, "an iframe cannot send a header"
+        assert c.get(f"/api/sessions/{wses}/messages?token={ta}").status_code == 401, "and nothing else takes a query token"
+        assert c.delete(f"/api/sessions/{wses}/preview", headers=H(ta)).json()["ok"]
+        assert c.get(f"/api/sessions/{wses}", headers=H(ta)).json()["preview"] is None
         art = m.artifacts.submit(m.db.one("SELECT * FROM runs WHERE id = ?", [wrun["id"]]), "markdown", "Summary", content="SECRET-ARTIFACT")
         assert c.get(f"/api/projects/{p['id']}/artifacts", headers=H(tb)).json() == [] and c.get(f"/api/artifacts/{art['artifact_id']}", headers=H(tb)).status_code == 403
         assert c.get(f"/api/artifacts/{art['artifact_id']}/file?token={tb}").status_code == 403

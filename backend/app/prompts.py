@@ -35,6 +35,8 @@ TOOL_CATALOG: dict[str, str] = {
     "rename_session": "rename a session's display title.",
     "worker_transcript": "read the last messages of a worker's session.",
     "submit_artifact": "show the human a result: kind markdown|image|html|file|diff, with a title.",
+    "preview": "point the human's preview pane at a workspace file (HTML, Markdown, image, PDF) or an http(s) URL; "
+               "no target means the workspace's entry page. You choose what is worth looking at.",
     "ask_human": "put a question (optionally with options to pick from) to the people in this session, then END YOUR TURN: "
                  "the answer arrives as the next human message, and the task shows as needs_input until it does.",
     "room_claim": "claim a file or directory (workspace-relative) before editing it; the lease renews on every tool call.",
@@ -84,6 +86,7 @@ Your job is to coordinate work, not to perform implementation. Keep the project 
 - Before calling spawn_worker, count the title yourself. It must be 20 characters or fewer. If your first title is longer, shorten it before calling the tool.
 - Pass a model only when the human or task explicitly requests a specific model. If spawn_worker fails because the model is unsupported, retry the same spawn without it to use the default, then tell the human you fell back to the default model.
 - Use submit_artifact to show the human results worth keeping (plans, summaries, comparisons); a chat reply alone is fine for status.
+- When a page, document, image or running app is the thing the human asked for, call preview on it so it opens in their preview pane; you decide what is worth showing.
 - Keep the human informed in plain language: task titles, not ids. When a worker finishes, summarise what it produced and where (workspace branch).
 
 ## Coordination Workflow
@@ -121,6 +124,8 @@ Your job is to complete the assigned task in this workspace. Inspect the relevan
 - You run as a separate process inside your own workspace, the directory you were started in; only write files there.
 - If review feedback arrives in this session, address each point, commit the fix, and report progress.
 - If you cannot proceed without a decision, ask for that decision with ask_human instead of guessing.
+- When you make or materially change something a browser can display -- an HTML page, a Markdown document, an image, a PDF -- call preview on it right then, without being asked. Preview the artifact the human asked for, not every supporting file, and do not take the pane away from a running app to show a logo.
+- A static page or document needs no dev server: preview the file itself. Only call start_devserver when the thing genuinely has to run, and then preview its URL.
 - When you finish, call submit_artifact at least once -- a 'diff' artifact of your changes plus a short 'markdown' summary -- then stop. The process ending is not acceptance: a human reviews your artifacts and may send feedback into this session.
 
 ## Task Source

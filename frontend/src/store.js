@@ -9,7 +9,7 @@ const LIST_EVENTS = {
   task: "tasks", run_status: "tasks", run_waiting: "tasks", run_blocked: "tasks", run_unblocked: "tasks",
   artifact: "artifacts", artifact_feedback: "artifacts", devserver: "artifacts",
   claim: "room", claims_released: "room", claim_expired: "room", decision: "room", room_message: "room", handoff: "room",
-  session: "sessions", project: "projects", cc_status: "cc",
+  session: "sessions", preview: "sessions", project: "projects", cc_status: "cc",
   conversation: "conversations", conversation_member: "conversations",
   notification: "notifications", team: "me", team_member: "me", invite: "me",
   agent_definition: "agents",

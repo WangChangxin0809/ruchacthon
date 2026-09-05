@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
-import { DiffText } from "./Preview";
-import Preview from "./Preview";
+import Preview, { AgentPreview, DiffText } from "./Preview";
 import Composer from "./Composer";
-import { Avatar, AvatarStack, Badge, Button, Dialog, Dot, I, STATUS_LABEL, fmtDur, fmtRel, fmtTime, permissionLabel, toneOf } from "./ui";
+import { Avatar, AvatarStack, Badge, Button, Dialog, Dot, I, STATUS_LABEL, Text, fmtDur, fmtRel, fmtTime, permissionLabel, toneOf } from "./ui";
 
 const TERMINAL = ["succeeded", "failed", "cancelled", "interrupted", "exhausted"];
 const EXPLORE = new Set(["Read", "Grep", "Glob", "ToolSearch", "LS", "WebFetch", "WebSearch"]);
@@ -76,17 +75,6 @@ function ExploreGroup({ tools, root }) {
     </div>
   );
 }
-function Text({ text }) {
-  // light markdown: fenced code, inline code, paragraphs
-  const parts = text.split(/(```[\s\S]*?```)/g);
-  return (
-    <div className="text-[13.5px] leading-relaxed whitespace-pre-wrap">
-      {parts.map((p, i) => p.startsWith("```") ? <pre key={i} className="bg-[var(--subtle)] rounded p-2 my-1 text-[12px] overflow-auto">{p.replace(/^```\w*\n?/, "").replace(/```$/, "")}</pre>
-        : p.split(/(`[^`]+`)/g).map((s, j) => s.startsWith("`") ? <code key={`${i}-${j}`} className="bg-[var(--subtle)] rounded px-1 text-[12px] text-[var(--working)]">{s.slice(1, -1)}</code> : <span key={`${i}-${j}`}>{s}</span>))}
-    </div>
-  );
-}
-
 function diffStats(diff) {
   const files = []; let cur = null;
   for (const l of (diff || "").split("\n")) {
@@ -244,7 +232,18 @@ export default function SessionView({ session, task, messages, streams, runStatu
       {inspector && (
         <aside className="w-[340px] shrink-0 border-l border-[var(--border)] bg-white overflow-y-auto">
           {inspector === "summary" && <Summary session={session} task={task} runs={runs} room={room} refetch={refetch} live={live} artifacts={artifacts} />}
-          {inspector === "preview" && <div className="p-3"><div className="label mb-2">成果预览</div><Preview artifacts={artifacts} tasks={task ? [task] : []} selectedTaskId={task?.id || null} onSelectTask={() => {}} /></div>}
+          {inspector === "preview" && (
+            <div className="p-3 space-y-4">
+              <div>
+                <div className="label mb-2">agent 打开的</div>
+                <AgentPreview session={session} onCleared={() => refetch("sessions")} />
+              </div>
+              <div>
+                <div className="label mb-2">提交的成果</div>
+                <Preview artifacts={artifacts} tasks={task ? [task] : []} selectedTaskId={task?.id || null} onSelectTask={() => {}} />
+              </div>
+            </div>
+          )}
           {inspector === "files" && (
             <div className="p-3">
               <div className="label mb-2">变更文件{task?.branch ? ` · ${task.branch}` : ""}</div>

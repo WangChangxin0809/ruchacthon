@@ -151,6 +151,10 @@ MIGRATIONS = [
     ("sessions", "agent_definition_id", "TEXT"),
     ("runs", "agent_definition_id", "TEXT"),
     ("messages", "meta", "TEXT NOT NULL DEFAULT '{}'"),
+    # what the agent pointed the preview pane at, and a counter so calling
+    # preview again on the same file still re-navigates (app/preview.py)
+    ("sessions", "preview", "TEXT NOT NULL DEFAULT '{}'"),
+    ("sessions", "preview_revision", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 SCHEMA_VERSION = 3
@@ -273,7 +277,7 @@ class Database:
 
 
 JSON_COLUMNS = {"blocks", "payload", "meta", "profile_snapshot", "extra_env", "compat", "depends_on", "subject", "models", "prefs",
-                "allowed_tools", "disallowed_tools", "mcp_servers", "link", "model_map"}
+                "allowed_tools", "disallowed_tools", "mcp_servers", "link", "model_map", "preview"}
 
 
 def _enc(v: Any) -> Any:

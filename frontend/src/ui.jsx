@@ -177,6 +177,35 @@ export function Callout({ tone = "neutral", children, className = "" }) {
   const t = { neutral: "bg-[var(--subtle)] text-[var(--muted)] border-[var(--border)]", amber: "bg-amber-50 text-amber-800 border-amber-200", red: "bg-red-50 text-red-700 border-red-200", green: "bg-green-50 text-green-700 border-green-200", blue: "bg-sky-50 text-sky-800 border-sky-200" }[tone];
   return <div className={`text-[12px] border rounded-md px-3 py-2 ${t} ${className}`}>{children}</div>;
 }
+// Light markdown, shared by the transcript and the preview pane: fenced code,
+// inline code, headings and bullets. Not a markdown library on purpose --
+// agent text and workspace documents are read here, not authored.
+export function Text({ text }) {
+  const parts = String(text ?? "").split(/(```[\s\S]*?```)/g);
+  return (
+    <div className="text-[13.5px] leading-relaxed whitespace-pre-wrap">
+      {parts.map((p, i) => p.startsWith("```")
+        ? <pre key={i} className="bg-[var(--subtle)] rounded p-2 my-1 text-[12px] overflow-auto">{p.replace(/^```\w*\n?/, "").replace(/```$/, "")}</pre>
+        : p.split("\n").map((line, j) => {
+            const h = line.match(/^(#{1,4})\s+(.*)$/);
+            const li = line.match(/^\s*[-*]\s+(.*)$/);
+            const body = inline(h ? h[2] : li ? li[1] : line, `${i}-${j}`);
+            if (h) return <div key={`${i}-${j}`} className={`font-semibold mt-2 ${h[1].length <= 2 ? "text-[15px]" : "text-[13.5px]"}`}>{body}</div>;
+            if (li) return <div key={`${i}-${j}`} className="pl-4 -indent-2">· {body}</div>;
+            return <div key={`${i}-${j}`}>{body}</div>;
+          }))}
+    </div>
+  );
+}
+
+function inline(s, key) {
+  return s.split(/(`[^`]+`|\*\*[^*]+\*\*)/g).map((x, k) => {
+    if (x.startsWith("`")) return <code key={`${key}-${k}`} className="bg-[var(--subtle)] rounded px-1 text-[12px] text-[var(--working)]">{x.slice(1, -1)}</code>;
+    if (x.startsWith("**")) return <strong key={`${key}-${k}`}>{x.slice(2, -2)}</strong>;
+    return <span key={`${key}-${k}`}>{x}</span>;
+  });
+}
+
 export function useToast() {
   const [toast, setToast] = useState(null);
   const show = (text, tone = "neutral") => { setToast({ text, tone }); setTimeout(() => setToast(null), 2200); };

@@ -25,7 +25,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import ccconfig, routes_agents, routes_auth, routes_conversations, routes_providers
+from . import ccconfig, preview, routes_agents, routes_auth, routes_conversations, routes_providers
 from .agents import AgentDefinitions
 from .artifacts import ArtifactStore
 from .auth import Auth, admin, bearer_of, me
@@ -374,7 +374,7 @@ def put_settings(body: SettingsIn, user: dict = Depends(admin)):
 
 # ---- sessions / chat ------------------------------------------------------------
 def _session_view(s: dict) -> dict:
-    base = {**s, "agent_definition": agents.binding(s)}
+    base = {**s, "agent_definition": agents.binding(s), "preview": s.get("preview") or None}
     conv = teams.conv_of_session(s["id"])
     if not conv:
         return {**base, "conversation_id": None, "member_count": 0, "human_count": 0}
@@ -417,6 +417,40 @@ def get_session(session_id: str, user: dict = Depends(me)):
     conv = teams.conv_of_session(session_id)
     return {**_session_view(s), "runs": runs_, "workspace": ws, "members": teams.conv_members(conv["id"]) if conv else [],
             "owner_id": conv["owner_id"] if conv else None}
+
+
+class PreviewIn(BaseModel):
+    target: str = ""
+    title: str = ""
+
+
+@app.get("/api/sessions/{session_id}/preview")
+def get_preview(session_id: str, user: dict = Depends(me)):
+    s = _session_for(user, session_id)
+    return {"preview": s.get("preview") or None, "revision": s.get("preview_revision") or 0}
+
+
+@app.delete("/api/sessions/{session_id}/preview")
+def clear_preview(session_id: str, user: dict = Depends(me)):
+    s = _session_for(user, session_id)
+    db.update("sessions", session_id, preview={}, preview_revision=int(s.get("preview_revision") or 0) + 1)
+    bus.emit("preview", {"session_id": session_id, "preview": None}, project_id=s["project_id"], session_id=session_id)
+    return {"ok": True}
+
+
+@app.get("/api/sessions/{session_id}/preview/file")
+def preview_file(session_id: str, path: str, user: dict = Depends(me)):
+    """Serve one workspace file to the preview pane. The path is re-confined
+    here, not trusted from the row: the agent wrote it and the workspace may
+    have changed since."""
+    s = _session_for(user, session_id)
+    run = db.one("SELECT * FROM runs WHERE session_id = ? ORDER BY created_at DESC LIMIT 1", [session_id])
+    ws = workspaces.get(run["workspace_id"]) if run else None
+    try:
+        f = preview.safe_path((ws or {}).get("path"), path)
+    except preview.PreviewError as e:
+        raise HTTPException(404, str(e))
+    return FileResponse(f, media_type=preview.content_type(path))
 
 
 class JoinRequestIn(BaseModel):

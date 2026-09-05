@@ -1,6 +1,58 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "./api";
-import { Badge, Button, Details, Empty, fmtTime } from "./ui";
+import { Badge, Button, Details, Empty, I, Text, fmtTime } from "./ui";
+
+// What the agent pointed the pane at (the `preview` tool, AO's `ao preview`).
+// The revision is why this is not just a URL: preview called again on the same
+// file means "look at it now", so the iframe has to be remounted.
+export function AgentPreview({ session, onCleared }) {
+  const pv = session?.preview || null;
+  const rev = session?.preview_revision || 0;
+  const [text, setText] = useState(null);
+  const src = pv ? (pv.kind === "url" ? pv.url : api.previewFileUrl(session.id, pv.path)) : null;
+  const kind = pv?.file_kind || (pv?.kind === "url" ? "url" : "file");
+
+  useEffect(() => {
+    setText(null);
+    if (!pv || !["markdown", "text"].includes(kind)) return;
+    let live = true;
+    fetch(src).then((r) => r.text()).then((t) => live && setText(t)).catch(() => live && setText("（读不到这个文件）"));
+    return () => { live = false; };
+  }, [src, kind, rev]);   // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!pv) {
+    return (
+      <div className="text-[12px] text-[var(--faint)] border border-dashed border-[var(--border)] rounded-lg py-6 px-3 text-center">
+        agent 还没有选要给你看的东西。它做出网页、文档、图片或跑起一个服务时会自己调 preview 打开这里。
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-2">
+      <div className="row text-[11px] text-[var(--muted)]">
+        <I.globe className="w-3.5 h-3.5" />
+        <span className="mono truncate flex-1" title={pv.url || pv.path}>{pv.title || pv.url || pv.path}</span>
+        <a className="text-[var(--working)] hover:underline" href={src} target="_blank" rel="noreferrer">新标签打开</a>
+        <button className="text-[var(--faint)] hover:text-[var(--text)]" title="关掉预览" onClick={async () => { await api.clearPreview(session.id); onCleared?.(); }}>关掉</button>
+      </div>
+      {(kind === "html" || kind === "url" || kind === "pdf") && (
+        <iframe key={`${src}#${rev}`} title={pv.title || "预览"} src={src}
+          sandbox={kind === "url" ? "allow-scripts allow-forms allow-same-origin" : "allow-scripts allow-forms"}
+          className="w-full h-[420px] bg-white rounded border border-[var(--border)]" />
+      )}
+      {kind === "image" && <img alt={pv.title || pv.path} src={`${src}#${rev}`} className="max-h-[420px] rounded border border-[var(--border)]" />}
+      {kind === "markdown" && (
+        <div className="bg-white rounded border border-[var(--border)] p-3 max-h-[420px] overflow-auto">
+          {text === null ? <span className="text-[12px] text-[var(--muted)]">加载中…</span> : <Text text={text} />}
+        </div>
+      )}
+      {kind === "text" && (
+        <pre className="whitespace-pre-wrap text-[12px] bg-[var(--subtle)] rounded p-3 max-h-[420px] overflow-auto">{text ?? "加载中…"}</pre>
+      )}
+      {kind === "file" && <a className="text-[13px] text-[var(--working)] underline" href={src} target="_blank" rel="noreferrer">下载 {pv.path}</a>}
+    </div>
+  );
+}
 
 export default function Preview({ artifacts, tasks, selectedTaskId, onSelectTask }) {
   const list = selectedTaskId ? artifacts.filter((a) => a.task_id === selectedTaskId) : artifacts;

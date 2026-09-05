@@ -24,6 +24,7 @@ from .cc_runner import CCRun, RunOutcome, RunSpec, kill_pid, pid_alive
 from .db import Database, new_id, now
 from .devservers import DevServerManager
 from .events import EventBus
+from . import preview
 from .prompts import build_system_prompt
 from .providers import ProviderProfiles, scrub
 from .room import Room
@@ -37,7 +38,7 @@ TERMINAL = {"succeeded", "failed", "cancelled", "exhausted", "interrupted"}
 # What each in-process MCP server exposes. prompts.build_system_prompt is given
 # the union for the servers a run actually has, so a rule never names a missing tool.
 _TOOLS_ROOM = ("list_agents", "get_session", "message_agent", "ask_human", "room_claim", "room_release", "room_state",
-               "room_broadcast", "room_inbox", "room_handoff", "submit_artifact", "start_devserver")
+               "room_broadcast", "room_inbox", "room_handoff", "submit_artifact", "preview", "start_devserver")
 _TOOLS_WORKBENCH = ("spawn_worker", "list_agent_definitions", "list_workers", "message_worker", "cancel_worker",
                     "kill_session", "rename_session", "worker_transcript")
 
@@ -636,6 +637,25 @@ class RunManager:
                                   project_id=run["project_id"], session_id=run["session_id"], conversation_id=conv["id"])
         return {"posted": True, "message_id": msg["id"], "asked": len(options)}
 
+    def set_preview(self, run: dict, target: str, title: str = "") -> dict:
+        """Point this session's preview pane at a file or a URL (AO's `ao
+        preview`). The revision is bumped even when the target is unchanged:
+        calling preview again means "look at this now", and a URL comparison
+        alone cannot express that."""
+        ws = self.workspaces.get(run["workspace_id"])
+        try:
+            got = preview.resolve((ws or {}).get("path"), target)
+        except preview.PreviewError as e:
+            return {"ok": False, "error": str(e)}
+        session = self.db.one("SELECT * FROM sessions WHERE id = ?", [run["session_id"]])
+        rev = int(session.get("preview_revision") or 0) + 1
+        row = {**got, "title": (title or "").strip()[:80] or None, "run_id": run["id"],
+               "file_kind": preview.kind_of(got["path"]) if got["kind"] == "file" else "url", "at": now()}
+        self.db.update("sessions", run["session_id"], preview=row, preview_revision=rev)
+        self.bus.emit("preview", {"session_id": run["session_id"], "preview": row, "preview_revision": rev},
+                      project_id=run["project_id"], task_id=run["task_id"], run_id=run["id"], session_id=run["session_id"])
+        return {"ok": True, **row, "revision": rev}
+
     def rename_session(self, session: dict, title: str) -> dict:
         title = (title or "").strip()[:80]
         if not title:
@@ -793,6 +813,13 @@ class RunManager:
             mgr._notify_artifact(run, {**art, "title": args["title"]})
             return _ok(art)
 
+        @tool("preview", "Point the human's preview pane at something: a workspace-relative file (HTML, Markdown, image, PDF) "
+                         "or an http(s) URL such as a dev server you started. Empty target picks the workspace's entry page. "
+                         "Call it as soon as the thing worth looking at exists.",
+              _schema({"target": "string", "title": "string"}, []))
+        async def preview_tool(args):
+            return _ok(mgr.set_preview(run, args.get("target") or "", args.get("title") or ""))
+
         @tool("start_devserver", "Start a dev server the human can open (managed by the workbench: port, health, logs). Returns its URL.",
               _schema({"title": "string", "command": "string", "port": "integer"}, ["title", "command"]))
         async def start_devserver(args):
@@ -808,7 +835,7 @@ class RunManager:
 
         return create_sdk_mcp_server("room", "1.0.0", [room_claim, room_release, room_state, room_broadcast, room_inbox, room_handoff,
                                                        list_agents, get_session, message_agent, send_message, ask_human,
-                                                       submit_artifact, start_devserver])
+                                                       submit_artifact, preview_tool, start_devserver])
 
 
 _STATUS_ZH = {"succeeded": "完成", "failed": "失败", "cancelled": "已取消", "exhausted": "用尽额度", "interrupted": "被中断"}

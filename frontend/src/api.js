@@ -118,6 +118,9 @@ export const api = {
   session: (sid) => get(`/api/sessions/${sid}`),
   patchSession: (sid, body) => patch(`/api/sessions/${sid}`, body),
   messages: (sid) => get(`/api/sessions/${sid}/messages`),
+  clearPreview: (sid) => del(`/api/sessions/${sid}/preview`),
+  previewFileUrl: (sid, path) =>
+    `${API_BASE}/api/sessions/${sid}/preview/file?path=${encodeURIComponent(path)}${getToken() ? `&token=${encodeURIComponent(getToken())}` : ""}`,
   send: (sid, text, profile_id, model) => post(`/api/sessions/${sid}/messages`, { text, profile_id, model }),
   tasks: (pid) => get(`/api/projects/${pid}/tasks`),
   task: (id) => get(`/api/tasks/${id}`),

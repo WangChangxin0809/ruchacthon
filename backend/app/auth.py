@@ -73,9 +73,10 @@ def public_user(u: dict) -> dict:
             "prefs": u.get("prefs") or {}, "created_at": u.get("created_at"), "bootstrap": bool(u.get("bootstrap"))}
 
 
-# ?token= exists for the two places a browser cannot send a header: the
-# WebSocket and <img src>/<a href> of an artifact file. Nowhere else.
-QUERY_TOKEN_PATHS = re.compile(r"^(/ws|/api/artifacts/[^/]+/file)$")
+# ?token= exists for the places a browser cannot send a header: the WebSocket,
+# <img src>/<a href> of an artifact file, and the <iframe src>/<img src> of a
+# previewed workspace file. Nowhere else.
+QUERY_TOKEN_PATHS = re.compile(r"^(/ws|/api/artifacts/[^/]+/file|/api/sessions/[^/]+/preview/file)$")
 
 
 def bearer_of(auth_header: str | None, query_token: str | None, path: str | None = None) -> str | None:
