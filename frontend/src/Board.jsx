@@ -1,39 +1,76 @@
-import { Badge, Empty, fmtTime } from "./ui";
-import { GROUPS } from "./Sidebar";
+import { useState } from "react";
+import { ARCHIVE_STATUSES, Dot, I, LANES, STATUS_LABEL, fmtRel, toneOf } from "./ui";
 
-// AO-style card: task, agent, branch, activity, review/merge, status — together.
-export default function Board({ tasks, onOpen, selectedTaskId, room }) {
-  if (tasks.length === 0) return <Empty>看板由真实运行生成：还没有任务。</Empty>;
-  const claimsFor = (t) => (room?.claims || []).filter((c) => c.run_id === t.latest_run?.id).length;
+// AO's board: four delivery lanes, cards that show task + agent + branch +
+// status + activity together, archive off to the side. Positions are derived
+// from the task view the server computes; nothing here is stored.
+export default function Board({ tasks, room, onOpen, onNewTask, onOpenMain, mainLive, onBell, project }) {
+  const [archive, setArchive] = useState(false);
+  const pending = room?.pending_decisions?.length || 0;
+  const archived = tasks.filter((t) => ARCHIVE_STATUSES.includes(t.status));
   return (
-    <div className="grid gap-3" style={{ gridTemplateColumns: `repeat(${GROUPS.length}, minmax(150px, 1fr))` }}>
-      {GROUPS.map((col) => {
-        const items = tasks.filter((t) => col.statuses.includes(t.status));
-        return (
-          <div key={col.key} className="min-w-0">
-            <div className="text-[11px] text-gray-500 mb-2 flex items-center gap-1.5"><span className={`w-1.5 h-1.5 rounded-full ${col.color}`} />{col.label} <span className="text-gray-700">{items.length}</span></div>
-            {items.map((t) => (
-              <button key={t.id} onClick={() => onOpen(t)}
-                className={`w-full text-left bg-gray-900 border rounded-lg p-2.5 mb-2 hover:border-gray-600 ${selectedTaskId === t.id ? "border-indigo-600" : "border-gray-800"}`}>
-                <div className="text-sm text-gray-100 truncate">{t.title}</div>
-                <div className="text-[10px] text-gray-500 truncate mt-0.5">
-                  {t.kind === "worker" ? "worker" : "主 agent"}{t.branch ? ` · ${t.branch}` : t.isolation === "main" ? " · 主目录" : ""}
-                </div>
-                <div className="mt-1 flex items-center gap-1 flex-wrap">
-                  <Badge status={t.status} />
-                  {t.review_status !== "unreviewed" && <Badge status="in_review">{t.review_status === "approved" ? "审阅通过" : "需修改"}</Badge>}
-                  {t.merge_status === "merged" && <Badge status="done">已合并</Badge>}
-                  {claimsFor(t) > 0 && <span className="text-[10px] text-gray-500">🔒 {claimsFor(t)}</span>}
-                </div>
-                <div className="text-[10px] text-gray-500 mt-1">
-                  {t.runs_count} 次运行{t.latest_run?.ended_at ? ` · ${fmtTime(t.latest_run.ended_at)}` : t.latest_run?.started_at ? ` · 始于 ${fmtTime(t.latest_run.started_at)}` : ""}
-                  {t.latest_run?.error && <div className="text-rose-400 truncate">{t.latest_run.error}</div>}
-                </div>
-              </button>
-            ))}
+    <div className="h-full flex flex-col min-h-0">
+      <div className="row h-12 px-4 border-b border-[var(--border)] bg-white shrink-0">
+        <I.list className="w-4 h-4" /><span className="font-semibold text-[14px]">看板</span>{project && <span className="text-[12px] text-[var(--muted)] ml-1 truncate">{project.name}</span>}
+        <div className="flex-1" />
+        <button onClick={onNewTask} className="btn"><I.plus className="w-3.5 h-3.5" /> 任务</button>
+        <button onClick={onOpenMain} className="btn btn-primary"><I.sitemap className="w-3.5 h-3.5" /> 主 agent</button>
+        <button className="btn btn-ghost relative" title="Room：认领 / 待你裁决" onClick={onBell}><I.bell className="w-4 h-4" />{pending > 0 && <span className="absolute -top-0.5 -right-0.5 bg-red-600 text-white rounded-full px-1 text-[9px]">{pending}</span>}</button>
+      </div>
+      {!mainLive && (
+        <div className="mx-4 mt-3 row gap-2 px-3 py-2 rounded-md border border-[var(--border)] bg-white text-[12px] text-[var(--muted)]"><span className="text-amber-500">▲</span> 这个项目还没有主 agent 在跑。主 agent 负责规划、直接改代码、把活派给 worker。</div>
+      )}
+      {tasks.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center">
+            <div className="text-[15px] font-semibold mb-1">还没有 worker 会话</div>
+            <div className="text-[13px] text-[var(--muted)] max-w-sm mx-auto mb-4">描述一个任务，主 agent 规划它、派出 worker 会话，并在这里跟踪进展。</div>
+            <div className="row justify-center"><button onClick={onOpenMain} className="btn btn-primary"><I.sitemap className="w-3.5 h-3.5" /> 启动主 agent</button><button onClick={onNewTask} className="btn"><I.plus className="w-3.5 h-3.5" /> 新任务</button></div>
           </div>
-        );
-      })}
+        </div>
+      ) : (
+        <div className="flex-1 min-h-0 flex overflow-x-auto mt-3 border-t border-[var(--border)] bg-white">
+          {LANES.map((lane) => {
+            const items = tasks.filter((t) => lane.statuses.includes(t.status));
+            return (
+              <div key={lane.key} className="flex-1 min-w-[240px] border-r border-[var(--border)] last:border-r-0 flex flex-col min-h-0">
+                <div className="row px-4 h-11 border-b border-[var(--border)] shrink-0"><Dot color={lane.color} /><span className="text-[13px] font-medium" style={{ color: lane.color }}>{lane.label}</span><span className="ml-auto text-[12px] text-[var(--muted)]">{items.length}</span></div>
+                <div className="flex-1 overflow-y-auto p-3 space-y-3 bg-[var(--bg)]">
+                  {items.map((t) => <Card key={t.id} t={t} room={room} onOpen={onOpen} />)}
+                </div>
+              </div>
+            );
+          })}
+          {archive && (
+            <div className="flex-1 min-w-[240px] flex flex-col min-h-0">
+              <div className="row px-4 h-11 border-b border-[var(--border)] shrink-0"><Dot color="var(--merged)" /><span className="text-[13px] font-medium" style={{ color: "var(--merged)" }}>已合并</span><span className="ml-auto text-[12px] text-[var(--muted)]">{archived.length}</span></div>
+              <div className="flex-1 overflow-y-auto p-3 space-y-3 bg-[var(--bg)]">{archived.map((t) => <Card key={t.id} t={t} room={room} onOpen={onOpen} />)}</div>
+            </div>
+          )}
+        </div>
+      )}
+      {tasks.length > 0 && <button onClick={() => setArchive(!archive)} className="text-[11px] text-[var(--muted)] hover:text-[var(--text)] px-4 py-1.5 border-t border-[var(--border)] bg-white text-left">{archive ? "隐藏" : "显示"}已合并（{archived.length}）</button>}
     </div>
+  );
+}
+
+function Card({ t, room, onOpen }) {
+  const claims = (room?.claims || []).filter((c) => c.run_id === t.latest_run?.id).length;
+  const when = t.latest_run?.ended_at || t.latest_run?.started_at || t.updated_at;
+  const cost = t.latest_run?.cost_usd;
+  const footer = t.review_status === "changes_requested" ? "已要求修改" : t.review_status === "approved" && t.merge_status !== "merged" ? "审阅通过，可合并" : t.merge_status === "merged" ? "已合并到主分支" : t.status === "in_review" ? "等待审阅" : STATUS_LABEL[t.status] || t.status;
+  return (
+    <button onClick={() => onOpen(t)} className="card w-full text-left hover:border-gray-400 transition">
+      <div className="px-3 pt-3 pb-2">
+        <div className="row"><I.bot className="w-4 h-4 text-orange-500" /><span className="text-[13px] font-semibold truncate">{t.title}</span></div>
+        <div className="row mt-1.5 text-[11px] text-[var(--muted)] mono"><I.branch className="w-3.5 h-3.5" /><span className="truncate">{t.branch || (t.isolation === "main" ? "项目目录（不隔离）" : "—")}</span></div>
+      </div>
+      <div className="row px-3 py-2 border-t border-[var(--border)] text-[11px]">
+        <span className="font-medium" style={{ color: toneOf(t.status) }}>{footer}</span>
+        {claims > 0 && <span className="text-[var(--faint)]">🔒{claims}</span>}
+        <span className="ml-auto text-[var(--faint)]">{cost ? `$${cost.toFixed(2)} · ` : ""}{fmtRel(when)}</span>
+      </div>
+      {t.latest_run?.error && <div className="px-3 pb-2 text-[11px] text-red-600 truncate">{t.latest_run.error}</div>}
+    </button>
   );
 }

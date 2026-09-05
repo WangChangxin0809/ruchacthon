@@ -9,16 +9,16 @@ export default function Preview({ artifacts, tasks, selectedTaskId, onSelectTask
   if (list.length === 0) return <Empty>{selectedTaskId ? "这个任务还没有提交成果。" : "agent 提交的成果会出现在这里（Markdown / 图片 / HTML / 文件 / diff / dev server）。"}</Empty>;
   return (
     <div className="space-y-2">
-      {selectedTaskId && <button className="text-[11px] text-gray-500 hover:text-gray-300" onClick={() => onSelectTask(null)}>← 查看全部成果</button>}
+      {selectedTaskId && <button className="text-[11px] text-[var(--muted)] hover:text-[var(--text)]" onClick={() => onSelectTask(null)}>← 查看全部成果</button>}
       {list.map((a) => {
         const open = openId === a.id;
         return (
-          <div key={a.id} className={`bg-gray-900 border rounded-lg overflow-hidden ${a.status === "current" ? "border-gray-800" : "border-gray-900 opacity-60"}`}>
-            <button onClick={() => setOpenId(open ? null : a.id)} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-gray-800">
-              <span className="text-[11px] text-gray-500 w-14 shrink-0">{a.kind}</span>
+          <div key={a.id} className={`card overflow-hidden ${a.status === "current" ? "" : "opacity-60"}`}>
+            <button onClick={() => setOpenId(open ? null : a.id)} className="w-full text-left px-3 py-2 flex items-center gap-2 hover:bg-[var(--subtle)]">
+              <span className="text-[11px] text-[var(--muted)] w-14 shrink-0">{a.kind}</span>
               <div className="flex-1 min-w-0">
-                <div className="text-sm text-gray-100 truncate">{a.title} <span className="text-gray-500">v{a.version}</span></div>
-                <div className="text-[11px] text-gray-500 truncate">{taskTitle(a.task_id)} · {fmtTime(a.created_at)}</div>
+                <div className="text-[13px] truncate">{a.title} <span className="text-[var(--muted)]">v{a.version}</span></div>
+                <div className="text-[11px] text-[var(--muted)] truncate">{taskTitle(a.task_id)} · {fmtTime(a.created_at)}</div>
               </div>
               {a.status !== "current" ? <Badge status="cancelled">已被新版本替代</Badge>
                 : a.kind === "devserver" ? <Badge status={a.available ? "running" : "failed"}>{a.available ? "可用" : "不可用"}</Badge>
@@ -47,63 +47,63 @@ function ArtifactBody({ a, author }) {
   }
   return (
     <div className="px-3 pb-3 space-y-2">
-      {a.kind === "markdown" && <pre className="whitespace-pre-wrap text-sm text-gray-200 bg-gray-950 rounded p-3 max-h-96 overflow-auto">{a.content}</pre>}
+      {a.kind === "markdown" && <pre className="whitespace-pre-wrap text-[13px] bg-[var(--subtle)] rounded p-3 max-h-96 overflow-auto">{a.content}</pre>}
       {a.kind === "diff" && <DiffText diff={a.content} />}
-      {a.kind === "html" && <iframe title={a.title} srcDoc={a.content} sandbox="" className="w-full h-80 bg-white rounded border border-gray-700" />}
-      {a.kind === "image" && <img alt={a.title} src={api.artifactFileUrl(a.id)} className="max-h-96 rounded border border-gray-800" />}
-      {a.kind === "file" && <a className="text-sm text-indigo-300 underline" href={api.artifactFileUrl(a.id)} target="_blank" rel="noreferrer">下载 {a.meta?.source_path}</a>}
+      {a.kind === "html" && <iframe title={a.title} srcDoc={a.content} sandbox="" className="w-full h-80 bg-white rounded border border-[var(--border)]" />}
+      {a.kind === "image" && <img alt={a.title} src={api.artifactFileUrl(a.id)} className="max-h-96 rounded border border-[var(--border)]" />}
+      {a.kind === "file" && <a className="text-[13px] text-[var(--working)] underline" href={api.artifactFileUrl(a.id)} target="_blank" rel="noreferrer">下载 {a.meta?.source_path}</a>}
       {a.kind === "devserver" && (
         <div className="space-y-2">
-          <div className="text-xs text-gray-400">
-            命令 <code className="text-gray-300">{a.meta?.command}</code> · 端口 {a.devserver?.port} · 状态 {a.devserver?.status} / {a.devserver?.health || "-"}
+          <div className="text-[12px] text-[var(--muted)]">
+            命令 <code className="text-[var(--text)]">{a.meta?.command}</code> · 端口 {a.devserver?.port} · 状态 {a.devserver?.status} / {a.devserver?.health || "-"}
           </div>
           {a.available ? (
             <>
-              <a className="text-sm text-indigo-300 underline" href={a.url} target="_blank" rel="noreferrer">在新窗口打开 {a.url}</a>
-              <iframe title={a.title} src={a.url} sandbox="allow-scripts allow-forms allow-same-origin" className="w-full h-96 bg-white rounded border border-gray-700" />
+              <a className="text-[13px] text-[var(--working)] underline" href={a.url} target="_blank" rel="noreferrer">在新窗口打开 {a.url}</a>
+              <iframe title={a.title} src={a.url} sandbox="allow-scripts allow-forms allow-same-origin" className="w-full h-96 bg-white rounded border border-[var(--border)]" />
             </>
-          ) : <div className="text-xs text-rose-300">服务已退出或成果已过期，不再显示为可用。</div>}
+          ) : <div className="text-[12px] text-red-600">服务已退出或成果已过期，不再显示为可用。</div>}
           <div className="flex gap-2">
             {a.devserver && a.devserver.status !== "stopped" && a.devserver.status !== "exited" && <Button kind="danger" onClick={() => api.stopDevserver(a.devserver.id)}>停止</Button>}
             {a.devserver && <Button onClick={async () => setLogs((await api.devserverLogs(a.devserver.id)).log)}>查看日志</Button>}
           </div>
-          {logs !== null && <pre className="text-[11px] text-gray-400 bg-gray-950 rounded p-2 max-h-48 overflow-auto">{logs || "(空)"}</pre>}
+          {logs !== null && <pre className="text-[11px] text-[var(--muted)] bg-[var(--subtle)] rounded p-2 max-h-48 overflow-auto">{logs || "(空)"}</pre>}
         </div>
       )}
       <Details summary={`详情：artifact ${a.id} · run ${a.run_id} · workspace ${a.workspace_id}`}>
-        <pre className="text-[11px] text-gray-500">{JSON.stringify(a.meta, null, 1)}</pre>
+        <pre className="text-[11px] text-[var(--muted)]">{JSON.stringify(a.meta, null, 1)}</pre>
       </Details>
       {a.feedback?.length > 0 && (
         <div className="space-y-1">
           {a.feedback.map((f) => (
-            <div key={f.id} className="text-xs text-gray-300 bg-gray-950 rounded px-2 py-1">
-              <span className="text-amber-300">{f.author}</span> · {f.verdict} · v{f.version} · {f.delivery}: {f.text}
+            <div key={f.id} className="text-[12px] bg-[var(--subtle)] rounded px-2 py-1">
+              <span className="text-amber-600">{f.author}</span> · {f.verdict} · v{f.version} · {f.delivery}: {f.text}
             </div>
           ))}
         </div>
       )}
       {a.status === "current" && (
         <div className="flex gap-1 items-start">
-          <select className="bg-gray-950 border border-gray-800 rounded px-1 py-1 text-xs text-gray-300" value={verdict} onChange={(e) => setVerdict(e.target.value)}>
+          <select className="input py-1 w-auto text-[12px]" value={verdict} onChange={(e) => setVerdict(e.target.value)}>
             <option value="comment">评论</option>
             <option value="request_changes">要求修改</option>
             <option value="approve">审阅通过</option>
           </select>
-          <input className="flex-1 bg-gray-950 border border-gray-800 rounded px-2 py-1 text-xs text-gray-200" placeholder="反馈会送回对应 worker 的会话" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} />
+          <input className="input flex-1 py-1 text-[12px]" placeholder="反馈会送回对应 worker 的会话" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && send()} />
           <Button kind="primary" onClick={send} disabled={!text.trim()}>发送</Button>
         </div>
       )}
-      {msg && <div className="text-[11px] text-gray-400">{msg}</div>}
+      {msg && <div className="text-[11px] text-[var(--muted)]">{msg}</div>}
     </div>
   );
 }
 
 export function DiffText({ diff }) {
-  if (!diff) return <div className="text-xs text-gray-500">（无改动）</div>;
+  if (!diff) return <div className="text-[12px] text-[var(--muted)]">（无改动）</div>;
   return (
-    <pre className="text-[11px] font-mono bg-gray-950 rounded p-2 max-h-[70vh] overflow-auto">
+    <pre className="text-[11px] bg-[var(--subtle)] rounded p-2 max-h-[70vh] overflow-auto">
       {diff.split("\n").map((l, i) => (
-        <div key={i} className={l.startsWith("+") && !l.startsWith("+++") ? "text-emerald-300" : l.startsWith("-") && !l.startsWith("---") ? "text-rose-300" : l.startsWith("@@") ? "text-sky-400" : "text-gray-400"}>{l || " "}</div>
+        <div key={i} className={l.startsWith("+") && !l.startsWith("+++") ? "text-green-700 bg-green-50" : l.startsWith("-") && !l.startsWith("---") ? "text-red-700 bg-red-50" : l.startsWith("@@") ? "text-sky-700" : "text-[var(--muted)]"}>{l || " "}</div>
       ))}
     </pre>
   );

@@ -2,8 +2,28 @@
 @tailwind components;
 @tailwind utilities;
 
-body {
-  margin: 0;
-  background: #0f1115;
-  color: #e5e7eb;
+/* Light, quiet surface in the spirit of Agent Orchestrator: white panels on a
+   grey ground, one black primary button, colour reserved for status. */
+:root {
+  --bg: #f4f4f6; --panel: #ffffff; --border: #e5e7eb; --subtle: #f2f2f5; --hover: #ececf0;
+  --text: #16181d; --muted: #6b7280; --faint: #9ca3af; --accent: #111318;
+  --working: #2563eb; --needs: #dc2626; --review: #ea580c; --ready: #16a34a; --idle: #9ca3af; --merged: #7c3aed; --validating: #d97706;
 }
+html, body, #root { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--text); font-size: 13px;
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif; }
+code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+@layer components {
+  .btn { @apply inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[13px] font-medium border border-[var(--border)] bg-white text-[var(--text)] hover:bg-[var(--subtle)] disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap; }
+  .btn-primary { @apply bg-[var(--accent)] text-white border-transparent hover:bg-black hover:opacity-90; }
+  .btn-ghost { @apply border-transparent bg-transparent hover:bg-[var(--subtle)]; }
+  .btn-danger { @apply text-red-600 hover:bg-red-50; }
+  .btn-sm { @apply px-2 py-1 text-[12px]; }
+  .input { @apply w-full rounded-md border border-[var(--border)] bg-white px-2.5 py-1.5 text-[13px] text-[var(--text)] placeholder:text-[var(--faint)] focus:outline-none focus:ring-2 focus:ring-gray-200; }
+  .card { @apply bg-white border border-[var(--border)] rounded-lg; }
+  .label { @apply text-[11px] uppercase tracking-wide text-[var(--muted)] font-semibold; }
+  .row { @apply flex items-center gap-2; }
+  .dot { @apply inline-block w-2 h-2 rounded-full shrink-0; }
+}
+.animate-breathe { animation: breathe 1.6s ease-in-out infinite; }
+@keyframes breathe { 0%,100% { opacity: 1 } 50% { opacity: .35 } }

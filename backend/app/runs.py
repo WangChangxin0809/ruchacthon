@@ -304,7 +304,7 @@ class RunManager:
     # ---- worker lifecycle (used by API and by the main agent's tools) ------
     def spawn_worker(self, project: dict, title: str, instructions: str, *, isolation: str = "worktree",
                      depends_on: list[str] | None = None, profile_id: str | None = None, edit_mode: str = "exclusive",
-                     workspace_id: str | None = None) -> dict:
+                     workspace_id: str | None = None, model: str | None = None) -> dict:
         t = now()
         task = self.db.insert("tasks", {"id": new_id("task"), "project_id": project["id"], "title": title, "description": instructions,
                                         "kind": "worker", "parent_task_id": None, "depends_on": depends_on or [], "review_status": "unreviewed",
@@ -322,20 +322,21 @@ class RunManager:
         self.db.update("tasks", task["id"], workspace_id=ws["id"])
         task["workspace_id"] = ws["id"]
         try:
-            return self._start_worker(project, task, ws, title, instructions, profile_id)
+            return self._start_worker(project, task, ws, title, instructions, profile_id, model=model)
         except Exception:
             self.db.execute("DELETE FROM tasks WHERE id = ?", [task["id"]])
             self.workspaces.remove(ws, project)
             raise
 
-    def _start_worker(self, project: dict, task: dict, ws: dict, title: str, instructions: str, profile_id: str | None) -> dict:
+    def _start_worker(self, project: dict, task: dict, ws: dict, title: str, instructions: str, profile_id: str | None,
+                      model: str | None = None) -> dict:
         t = now()
         session = self.db.insert("sessions", {"id": new_id("ses"), "project_id": project["id"], "task_id": task["id"], "kind": "worker",
                                               "title": title, "cc_session_id": None, "created_at": t})
         self.bus.emit("task", self.task_view(task), project_id=project["id"], task_id=task["id"])
         self.bus.emit("session", session, project_id=project["id"], task_id=task["id"], session_id=session["id"])
         run = self.create_run(project=project, session=session, workspace=ws, kind="worker", prompt=instructions,
-                              task_id=task["id"], profile_id=profile_id)
+                              task_id=task["id"], profile_id=profile_id, model=model)
         return {"task": self.task_view(task), "session": session, "run": run, "workspace": ws}
 
     def retry_task(self, task: dict, prompt: str | None, profile_id: str | None) -> dict:

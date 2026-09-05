@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
-import { Button, Empty, fmtTime } from "./ui";
+import { Empty, I, fmtTime } from "./ui";
 
 // People talking to people. Nothing here reaches a model unless someone
 // deliberately hands it to the work area with 「派给 agent」.
@@ -29,7 +29,7 @@ export default function Chat({ channels, author, lastEvent, refetch, projects, o
 
   async function send() {
     if (!input.trim() || !current) return;
-    if (!author) { setErr("先在右上角填你的名字"); return; }
+    if (!author) { setErr("先在左下角填你的名字"); return; }
     setErr("");
     try { await api.chatPost(current.id, input, author); setInput(""); } catch (e) { setErr(e.message); }
   }
@@ -40,47 +40,47 @@ export default function Chat({ channels, author, lastEvent, refetch, projects, o
 
   return (
     <div className="flex h-full min-h-0">
-      <div className="w-60 border-r border-gray-800 flex flex-col bg-[#0c0e12]">
-        <div className="px-3 py-2 text-xs text-gray-400 border-b border-gray-800">群 · {channels.length}</div>
+      <div className="w-60 border-r border-[var(--border)] flex flex-col bg-[var(--bg)]">
+        <div className="row h-12 px-4 border-b border-[var(--border)] font-semibold text-[14px]"><I.chat className="w-4 h-4" /> 聊天 <span className="text-[12px] text-[var(--muted)] font-normal">{channels.length} 个群</span></div>
         <div className="flex-1 overflow-auto">
           {channels.map((c) => (
-            <button key={c.id} onClick={() => setChannelId(c.id)} className={`w-full text-left px-3 py-2 text-sm ${current?.id === c.id ? "bg-gray-800 text-white" : "text-gray-300 hover:bg-gray-900"}`}>
-              <div className="flex items-center justify-between"><span># {c.name}</span>{c.last && <span className="text-[10px] text-gray-600">{fmtTime(c.last.created_at)}</span>}</div>
-              {c.last && <div className="text-[10px] text-gray-500 truncate">{c.last.author}: {c.last.text}</div>}
+            <button key={c.id} onClick={() => setChannelId(c.id)} className={`w-full text-left px-3 py-2 text-[13px] rounded-md mx-1 ${current?.id === c.id ? "bg-[var(--hover)]" : "hover:bg-[var(--subtle)]"}`} style={{ width: "calc(100% - 8px)" }}>
+              <div className="flex items-center justify-between"><span># {c.name}</span>{c.last && <span className="text-[10px] text-[var(--faint)]">{fmtTime(c.last.created_at)}</span>}</div>
+              {c.last && <div className="text-[11px] text-[var(--muted)] truncate">{c.last.author}: {c.last.text}</div>}
             </button>
           ))}
         </div>
-        <div className="p-2 border-t border-gray-800 flex gap-1">
-          <input className="flex-1 min-w-0 bg-gray-900 border border-gray-800 rounded px-2 py-1 text-xs text-gray-200" placeholder="拉个群…" value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && createChannel()} />
-          <Button onClick={createChannel} disabled={!newName.trim()}>＋</Button>
+        <div className="p-2 border-t border-[var(--border)] flex gap-1">
+          <input className="input flex-1 min-w-0 py-1" placeholder="拉个群…" value={newName} onChange={(e) => setNewName(e.target.value)} onKeyDown={(e) => e.key === "Enter" && createChannel()} />
+          <button className="btn btn-sm" onClick={createChannel} disabled={!newName.trim()}><I.plus className="w-3.5 h-3.5" /></button>
         </div>
       </div>
-      <div className="flex-1 flex flex-col min-w-0">
-        <div className="px-4 py-2 border-b border-gray-800 flex items-center gap-3">
-          <span className="text-sm text-gray-200"># {current?.name || "—"}</span>
-          <span className="text-[11px] text-gray-500">人和人聊。贴任务链接（?p=…&s=…）会变成可点的卡片；悬停消息可「派给 agent」</span>
+      <div className="flex-1 flex flex-col min-w-0 bg-white">
+        <div className="row h-12 px-4 border-b border-[var(--border)]">
+          <span className="text-[14px] font-semibold"># {current?.name || "—"}</span>
+          <span className="text-[11px] text-[var(--muted)]">人和人聊。贴任务链接（?p=…&s=…）会变成可点的卡片；悬停消息可「派给 agent」</span>
         </div>
-        <div className="flex-1 overflow-auto p-4 space-y-2">
+        <div className="flex-1 overflow-auto p-4 space-y-2"><div className="max-w-[760px] mx-auto space-y-2">
           {messages.length === 0 && <Empty>还没有消息。</Empty>}
           {messages.map((m) => (
             <div key={m.id} className={`group flex ${m.author === author ? "justify-end" : "justify-start"}`}>
-              <div className={`max-w-[75%] rounded-lg px-3 py-2 text-sm ${m.author === author ? "bg-indigo-900/70 text-indigo-100" : "bg-gray-800 text-gray-100"}`}>
-                <div className="text-[10px] text-gray-400 mb-0.5 flex items-center gap-2">
+              <div className={`max-w-[75%] rounded-xl px-4 py-2.5 text-[13.5px] ${m.author === author ? "bg-[var(--accent)] text-white" : "bg-[var(--subtle)]"}`}>
+                <div className={`text-[10px] mb-0.5 flex items-center gap-2 ${m.author === author ? "text-white/60" : "text-[var(--muted)]"}`}>
                   <span>{m.author} · {fmtTime(m.created_at)}</span>
-                  <button onClick={() => setAssign(m)} className="opacity-0 group-hover:opacity-100 text-indigo-300 hover:text-indigo-100">派给 agent</button>
+                  <button onClick={() => setAssign(m)} className="opacity-0 group-hover:opacity-100 underline">派给 agent</button>
                 </div>
                 <Rich text={m.text} onOpenTask={onOpenTask} />
               </div>
             </div>
           ))}
           <div ref={bottomRef} />
-        </div>
-        {err && <div className="mx-4 text-xs text-rose-300">{err}</div>}
-        <div className="p-3 border-t border-gray-800 flex gap-2">
-          <textarea rows={2} className="flex-1 bg-gray-900 border border-gray-700 rounded px-3 py-2 text-sm text-gray-100 resize-none" placeholder={`在 #${current?.name || ""} 说点什么…（Enter 发送，Shift+Enter 换行）`} value={input}
+        </div></div>
+        {err && <div className="mx-4 text-[12px] text-red-600">{err}</div>}
+        <div className="px-4 pb-4 pt-2"><div className="max-w-[760px] mx-auto card rounded-2xl shadow-sm focus-within:border-gray-400 flex items-end gap-2 p-2">
+          <textarea rows={2} className="flex-1 bg-transparent px-2 py-1.5 text-[14px] resize-none focus:outline-none placeholder:text-[var(--faint)]" placeholder={`在 #${current?.name || ""} 说点什么…（Enter 发送，Shift+Enter 换行）`} value={input}
             onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }} />
-          <Button kind="primary" onClick={send} disabled={!input.trim()}>发送</Button>
-        </div>
+          <button onClick={send} disabled={!input.trim()} className="w-7 h-7 mb-1 rounded-full bg-[var(--accent)] text-white flex items-center justify-center disabled:opacity-30"><I.send className="w-4 h-4" /></button>
+        </div></div>
       </div>
       {assign && <AssignDialog message={assign} projects={projects} author={author} onClose={() => setAssign(null)} onDone={(t) => { setAssign(null); onOpenTask(t); }} channel={current} />}
     </div>
@@ -95,7 +95,7 @@ function Rich({ text, onOpenTask }) {
       {parts.map((part, i) => {
         const m = part.match(/\?p=([\w-]+)&s=([\w-]+)/);
         if (!m) return <span key={i}>{part}</span>;
-        return <button key={i} onClick={() => onOpenTask({ id: null, project_id: m[1], session_id: m[2] })} className="inline-block align-middle text-[11px] bg-gray-900 border border-indigo-800 rounded px-1.5 py-0.5 text-indigo-200 hover:border-indigo-500">↗ 打开会话 {m[2].slice(-6)}</button>;
+        return <button key={i} onClick={() => onOpenTask({ id: null, project_id: m[1], session_id: m[2] })} className="inline-block align-middle text-[11px] bg-white text-[var(--text)] border border-[var(--border)] rounded px-1.5 py-0.5 hover:border-gray-400">↗ 打开会话 {m[2].slice(-6)}</button>;
       })}
     </div>
   );
@@ -116,20 +116,19 @@ function AssignDialog({ message, projects, author, channel, onClose, onDone }) {
       onDone(t);
     } catch (e) { setErr(e.message); } finally { setBusy(false); }
   }
-  const input = "w-full bg-gray-950 border border-gray-800 rounded px-2 py-1.5 text-sm text-gray-200";
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-[#111318] border border-gray-800 rounded-lg w-[480px] p-5 text-sm space-y-3" onClick={(e) => e.stopPropagation()}>
-        <h2 className="text-gray-100">把这条消息派给 agent</h2>
-        <div className="text-xs text-gray-400 bg-gray-900 rounded p-2 max-h-32 overflow-auto whitespace-pre-wrap">{message.text}</div>
-        <select className={input} value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50" onClick={onClose}>
+      <div className="bg-white border border-[var(--border)] rounded-xl shadow-xl w-[480px] p-5 text-[13px] space-y-3" onClick={(e) => e.stopPropagation()}>
+        <h2 className="font-semibold text-[14px]">把这条消息派给 agent</h2>
+        <div className="text-[12px] text-[var(--muted)] bg-[var(--subtle)] rounded p-2 max-h-32 overflow-auto whitespace-pre-wrap">{message.text}</div>
+        <select className="input" value={projectId} onChange={(e) => setProjectId(e.target.value)}>
           {projects.length === 0 && <option value="">（先新增项目）</option>}
           {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </select>
-        <input className={input} value={title} onChange={(e) => setTitle(e.target.value)} placeholder="任务名" />
-        <div className="text-[11px] text-gray-500">会启动一个 worker（独立 worktree），并在群里回一条带链接的消息。</div>
-        {err && <div className="text-xs text-rose-300">{err}</div>}
-        <div className="flex justify-end gap-2"><Button onClick={onClose}>取消</Button><Button kind="primary" disabled={busy || !projectId || !title.trim()} onClick={go}>{busy ? "启动中…" : "启动 worker"}</Button></div>
+        <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="任务名" />
+        <div className="text-[11px] text-[var(--muted)]">会启动一个 worker（独立 worktree），并在群里回一条带链接的消息。</div>
+        {err && <div className="text-[12px] text-red-600">{err}</div>}
+        <div className="row justify-end"><button className="btn btn-sm" onClick={onClose}>取消</button><button className="btn btn-primary btn-sm" disabled={busy || !projectId || !title.trim()} onClick={go}>{busy ? "启动中…" : "启动 worker"}</button></div>
       </div>
     </div>
   );

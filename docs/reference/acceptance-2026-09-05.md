@@ -35,6 +35,13 @@ All runs below were made on a scratch git project registered as
 | 15 | Secrets are write-only | Profile key saved through `PATCH /api/profiles/{id}{secret}`; `GET /api/profiles` returns only `credential_set`/`credential_source`; the store file is `0600` | `test_workbench.py` secrets section |
 | 16 | Login state is shown, not assumed | `/api/cc/status` runs `claude auth status --json` for the server login and, separately, for a token saved on the settings page; the header dot reflects `effective` | header, 设置 → Claude Code |
 
+## Round 3 (same day): the UI copied from Agent Orchestrator
+
+| # | Requirement | What happened | Evidence |
+|---|---|---|---|
+| 17 | AO's layout on our backend | Sidebar (projects → sessions), home (start actions, 需要你, recent projects), four-lane board, session view (timeline / composer / inspector), settings modal, people-only chat; every page rendered against the live local backend with real runs | screenshots `wb-home/board/session-main/session-worker/chat/settings.png` in the session scratchpad |
+| 18 | Model chosen in the new-task dialog reaches the worker run | `POST /api/projects/{id}/tasks` with `model=claude-haiku-4-5-20251001`; the worker run's `profile_snapshot.model` is that id and the reply was the requested `PONG` | `task_e2226c7aae6b`, `run_848003c722eb` |
+
 ## Not verified (honest list)
 
 - **Real provider paths other than the CC login**: Bedrock, Vertex, Foundry

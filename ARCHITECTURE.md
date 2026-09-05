@@ -57,7 +57,7 @@ in `in_review`; only a human moves it past that.
 | `backend/app/providers.py`, `secrets_store.py`, `ccconfig.py` | Provider Profiles + compat check; write-only 0600 secret store; CC install/config/login discovery | `cc_runner` (env) |
 | `backend/app/shared_edit.py` | EXPERIMENTAL CRDT merge for `Write` in shared-edit workspaces | `runs.py` hooks |
 | `backend/app/db.py`, `events.py`, `main.py` | SQLite schema; seq'd event bus; FastAPI + WebSocket | frontend |
-| `frontend/src/` | React workbench: 总览 (cross-project board), 工作 (sidebar, session, board/preview/diff, Room bar), 聊天 (people only), dsh-style settings | `/api`, `/ws` |
+| `frontend/src/` | React workbench laid out like Agent Orchestrator: sidebar (projects → sessions), home (start actions, 需要你, recent projects), per-project kanban board, session view (timeline + composer + inspector: summary/preview/files), Room drawer, people-only chat, dsh-style settings | `/api`, `/ws` |
 | `scripts/gates/check_escalation_decisions.py` | the merge gate: no pending decisions | `workbench.db` |
 
 ## Invariants

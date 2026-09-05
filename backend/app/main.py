@@ -338,7 +338,10 @@ def list_sessions(project_id: str):
 @app.get("/api/sessions/{session_id}")
 def get_session(session_id: str):
     s = _get("sessions", session_id)
-    return {**s, "runs": db.all("SELECT * FROM runs WHERE session_id = ? ORDER BY created_at", [session_id])}
+    runs_ = db.all("SELECT * FROM runs WHERE session_id = ? ORDER BY created_at", [session_id])
+    # the UI shows paths relative to where the session actually edits
+    ws = db.one("SELECT * FROM workspaces WHERE id = ?", [runs_[-1]["workspace_id"]]) if runs_ else None
+    return {**s, "runs": runs_, "workspace": ws}
 
 
 @app.get("/api/sessions/{session_id}/messages")
@@ -381,6 +384,7 @@ class TaskIn(BaseModel):
     isolation: str = "worktree"          # worktree | main
     depends_on: list[str] = []
     profile_id: str | None = None
+    model: str | None = None
     edit_mode: str = "exclusive"         # exclusive | shared (experimental)
     workspace_id: str | None = None
 
@@ -396,7 +400,7 @@ def create_task(project_id: str, body: TaskIn):
     p = _get("projects", project_id)
     try:
         return runs.spawn_worker(p, body.title, body.instructions, isolation=body.isolation, depends_on=body.depends_on,
-                                 profile_id=body.profile_id, edit_mode=body.edit_mode, workspace_id=body.workspace_id)
+                                 profile_id=body.profile_id, edit_mode=body.edit_mode, workspace_id=body.workspace_id, model=body.model)
     except RuntimeError as e:
         raise HTTPException(400, str(e))
 
