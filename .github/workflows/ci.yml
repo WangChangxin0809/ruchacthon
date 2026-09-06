@@ -49,11 +49,16 @@ jobs:
           # it. Nothing here needs to push.
           persist-credentials: false
 
-      # The harness is Python with no dependencies. Your project's own toolchain
-      # goes in a second job, or in `./ci.sh`'s unit lane.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.13"
+
+      # The harness itself is dependency-free, but `./ci.sh`'s unit lane runs
+      # backend/tests/test_workbench.py, which imports the app. Installing here
+      # is what lets this job call the repository's one entry point instead of
+      # a second roster that drifts from it.
+      - name: install backend deps
+        run: python3 -m pip install -r backend/requirements.txt
 
       # First, and on its own: a suite whose checks have stopped being able to
       # fail reports a clean build forever.
@@ -65,52 +70,8 @@ jobs:
 
       # Exit 2 -- could not judge -- fails the step, and that is correct. It is
       # never a pass.
-      #
-      # The branch below exists only while this is still the template. An
-      # unfilled harness *must* exit 2, so here that is the assertion rather
-      # than the failure: a template whose front page shows a permanent red
-      # cross teaches, on day one, that a red cross is something you live with.
-      # Delete START-HERE.md, as the checklist tells you to, and what is left
-      # is a plain run of ./ci.sh.
       - name: the repository is sound
-        run: |
-          # `rc=0; cmd || rc=$?`, never `cmd; rc=$?`. The step's shell is
-          # `bash -e`, so the second form dies on the non-zero exit before the
-          # assignment ever runs -- which is how the first version of this
-          # block failed with the very code it was written to accept.
-          rc=0; ./ci.sh || rc=$?
-          if [ ! -e START-HERE.md ]; then exit "$rc"; fi
-          if [ "$rc" != "2" ]; then
-            echo "::error::an unfilled harness must exit 2, got $rc"
-            exit 1
-          fi
-          echo "::notice::could not judge, as it should be - nobody has yet written down what this repository is. Work through START-HERE.md."
-
-  # Its own job, per the comment above `harness`'s python-version step: the
-  # bare-Python harness job proves the checks themselves aren't broken;
-  # this one proves the product they're checking still runs, which needs
-  # backend/requirements.txt installed first.
-  backend-tests:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
-        with:
-          python-version: "3.13"
-
-      - name: install backend deps
-        run: python3 -m pip install -r backend/requirements.txt
-
-      # No Claude Code login exists here, on purpose: this proves the
-      # workbench mechanics (events, Room, artifacts, profiles, restart
-      # reconciliation, CRDT merge) without a model. Real-model behaviour is
-      # recorded in docs/reference/acceptance-2026-09-05.md.
-      - name: workbench mechanics (no Claude Code needed)
-        run: python3 backend/tests/test_workbench.py
+        run: ./ci.sh
 
   frontend-build:
     runs-on: ubuntu-latest
