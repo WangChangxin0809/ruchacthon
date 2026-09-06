@@ -1,7 +1,7 @@
 # 0002 — Provider-agnostic LLM client, and why we wrote our own agent loop
 
 Date: 2026-09-04
-Status: accepted
+Status: superseded by [0003](0003-claude-code-only-harness.md) — the hand-written loop was removed on 2026-09-05
 
 ## Context
 

@@ -1,85 +1,58 @@
 #!/usr/bin/env python3
-"""Gate: no merge while a team-scope claim conflict is undecided.
+"""Gate: no merge while a claim conflict is waiting on a human.
 
-This is the enforcement point for the track's boundary rule -- remove the
-human and the workflow must stop working, not just look worse. AgentRoom
-resolves worktree/person scope conflicts on its own; team-scope conflicts
-(different teammates' agents wanting the same file) are written to
-backend/data/room_log.jsonl as a "CONFLICT escalated: <id>" claim entry.
-Each such id must have a matching record in backend/data/decisions.jsonl
-before this gate passes -- machine coordination stops at the team boundary,
-a person picks up from there.
+CLAUDE.md hard rule 1: a same-workspace claim conflict becomes a pending
+human decision and stays blocked until one is recorded. The workbench
+enforces that at runtime (backend/app/room.py::Room._conflict); this gate is
+the second half -- nothing ships while a decision is still pending, so
+"remove the human and the workflow stops" holds at the merge line too.
 
-    0 = every team-scope conflict has a decision (or none exist, or the
-        backend has never run -- there is nothing to gate on either way)
-    1 = judged failure: at least one conflict is still undecided
+Reads the workbench SQLite database (backend/data/workbench.db by default,
+or $WORKBENCH_DATA_DIR/workbench.db).
+
+    0 = no pending decisions (or no database yet: nothing to gate on)
+    1 = judged failure: at least one decision is pending
 
 Run standalone: python3 scripts/gates/check_escalation_decisions.py --root <repo>
 """
 from __future__ import annotations
 
 import argparse
-import json
 import os
-import re
-
-CONFLICT_RE = re.compile(r"CONFLICT escalated: (\S+)")
+import sqlite3
 
 
-def _read_jsonl(path):
-    if not os.path.exists(path):
-        return None
-    records = []
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                records.append(json.loads(line))
-    return records
+def db_path(root: str) -> str:
+    data_dir = os.environ.get("WORKBENCH_DATA_DIR") or os.path.join(root, "backend", "data")
+    return os.path.join(data_dir, "workbench.db")
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=".")
     args = parser.parse_args()
-
-    log_path = os.path.join(args.root, "backend", "data", "room_log.jsonl")
-    decisions_path = os.path.join(args.root, "backend", "data", "decisions.jsonl")
-
-    log = _read_jsonl(log_path) or []
-    if not log:
-        print("check_escalation_decisions: no room_log.jsonl yet, nothing to gate on "
-              "(run the backend and let agents claim files first)")
+    path = db_path(args.root)
+    if not os.path.exists(path):
+        print("check_escalation_decisions: no workbench.db yet, nothing to gate on "
+              "(run the backend and let workers claim files first)")
         return 0
-
-    escalation_ids = set()
-    for entry in log:
-        if entry.get("type") != "claim":
-            continue
-        m = CONFLICT_RE.search(entry.get("note", ""))
-        if m:
-            escalation_ids.add(m.group(1))
-
-    if not escalation_ids:
-        print("check_escalation_decisions: no team-scope conflicts logged, nothing to gate on")
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        try:
+            rows = conn.execute("SELECT id, subject, blocked_run_id, created_at FROM decisions WHERE status = 'pending'").fetchall()
+        except sqlite3.OperationalError as e:
+            print(f"check_escalation_decisions: cannot read decisions table ({e})")
+            return 2
+    finally:
+        conn.close()
+    if not rows:
         return 0
-
-    decisions = _read_jsonl(decisions_path) or []
-    decided_ids = {d.get("escalation_id") for d in decisions if d.get("decision") == "approve"}
-
-    undecided = escalation_ids - decided_ids
-    if undecided:
-        print(
-            "Blocked: the following AgentRoom escalations are unresolved -- "
-            "a human has not approved a decision for them, and this repo's "
-            "gate requires one before merge (see backend/README.md):\n  "
-            + "\n  ".join(sorted(undecided)),
-        )
-        return 1
-
-    print(f"check_escalation_decisions: all {len(escalation_ids)} team-scope "
-          f"conflict(s) have an approved human decision")
-    return 0
+    print(f"Blocked: {len(rows)} claim conflict(s) still waiting on a human decision:")
+    for id_, subject, run_id, ts in rows:
+        print(f"  {id_}  run {run_id}  since {ts}  {subject[:120]}")
+    print("Decide each in the workbench Room panel (or POST /api/decisions/<id>/decide) before merging.")
+    print("Why: CLAUDE.md hard rule 1 / ARCHITECTURE.md invariant 1.")
+    return 1
 
 
 if __name__ == "__main__":

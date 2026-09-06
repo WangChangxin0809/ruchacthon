@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Runs ON the server after rsync (called by aliyun.sh): deps, env file
+# (created once, never overwritten), systemd unit, restart, health.
+set -euo pipefail
+DEST="${1:-/opt/workbench}"
+/opt/workbench-venv/bin/pip install -q -r "$DEST/backend/requirements.txt"
+mkdir -p /var/lib/workbench/projects
+if [ ! -f /etc/workbench.env ]; then
+  TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+  {
+    echo "WORKBENCH_TOKEN=$TOKEN"
+    echo "WORKBENCH_DATA_DIR=/var/lib/workbench"
+    echo "WORKBENCH_MODEL=claude-sonnet-5"
+    echo "WORKBENCH_MAX_CONCURRENT_RUNS=2"
+    echo "# Claude Code login for the service: run 'claude' once as root on this box,"
+    echo "# or set the same CLAUDE_CODE_OAUTH_TOKEN your local ~/.claude/settings.json env uses."
+    echo "#CLAUDE_CODE_OAUTH_TOKEN="
+  } > /etc/workbench.env
+  chmod 600 /etc/workbench.env
+fi
+cat > /etc/systemd/system/workbench.service <<UNIT
+[Unit]
+Description=CC Workbench
+After=network.target
+
+[Service]
+EnvironmentFile=/etc/workbench.env
+Environment=HOME=/root
+WorkingDirectory=$DEST
+ExecStart=/opt/workbench-venv/bin/python -m uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8787
+Restart=on-failure
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable workbench >/dev/null 2>&1 || true
+# Every deploy may migrate the schema (db.py MIGRATIONS + SCHEMA_VERSION), so
+# checkpoint the WAL and keep a copy of the database first; the rehearsal in
+# docs/how-to/deploy-aliyun.md step 3b works on such a copy. Kept forever: they
+# are small and a failed migration is the one case where they are priceless.
+mkdir -p /var/lib/workbench/backups
+if [ -f /var/lib/workbench/workbench.db ]; then
+  /opt/workbench-venv/bin/python - <<'PY'
+import shutil, sqlite3, time
+db = '/var/lib/workbench/workbench.db'
+sqlite3.connect(db).execute('PRAGMA wal_checkpoint(TRUNCATE)')
+dst = f'/var/lib/workbench/backups/workbench-{time.strftime("%Y%m%d-%H%M%S")}.db'
+shutil.copy2(db, dst)
+print('database backup:', dst)
+PY
+fi
+systemctl restart workbench
+sleep 4
+echo "service: $(systemctl is-active workbench)"
+curl -s -o /dev/null -w "health %{http_code}\n" http://127.0.0.1:8787/api/auth

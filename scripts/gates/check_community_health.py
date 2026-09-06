@@ -52,10 +52,17 @@ FILES = {
 #
 # Keys carry no article, because the message is built from them and the first
 # version of it read "the README has no a pointer to contributing".
+# The public face is written for the audience being asked to contribute, which
+# here is Chinese; a pattern that only knows English headings would keep passing
+# over a translated README and match nothing.
 README_SECTIONS = {
-    "quick start": r"(?im)^#{1,4}\s*(quick\s*start|getting\s*started|installation|install|usage)\b",
-    "requirements section": r"(?im)^#{1,4}\s*(requirements|prerequisites|dependencies)\b|^\s*[-*]\s*(python|node|go|rust|godot|java)\s*[\d>=]",
-    "licence statement": r"(?im)^#{1,4}\s*licen[cs]e\b|\blicen[cs]ed under\b",
+    "quick start": r"(?im)^#{1,4}\s*(quick\s*start|getting\s*started|installation|install|usage)\b"
+                   r"|^#{1,4}\s*(快速开始|快速上手|开始使用|安装|使用方法|用法)",
+    "requirements section": r"(?im)^#{1,4}\s*(requirements|prerequisites|dependencies)\b"
+                            r"|^#{1,4}\s*(环境要求|运行要求|前置条件|依赖)"
+                            r"|^\s*[-*]\s*(python|node|go|rust|godot|java)\s*[\d>=]",
+    "licence statement": r"(?im)^#{1,4}\s*licen[cs]e\b|\blicen[cs]ed under\b"
+                         r"|^#{1,4}\s*(许可|授权|开源协议)",
     "pointer to CONTRIBUTING": r"(?i)contributing",
 }
 

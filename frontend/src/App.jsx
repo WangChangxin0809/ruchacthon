@@ -1,178 +1,183 @@
-import { useEffect, useState } from "react";
-import { fetchAgents, fetchEscalations, fetchPreviews, decide, connectWebSocket } from "./api";
-import ChatPanel from "./ChatPanel";
-import PreviewPanel from "./PreviewPanel";
+import { useCallback, useEffect, useState } from "react";
+import { api } from "./api";
+import Board from "./Board";
+import Chat from "./Chat";
+import Home from "./Home";
+import Inbox from "./Inbox";
+import Login from "./Login";
+import NewTaskDialog from "./NewTaskDialog";
+import ProjectDialog from "./ProjectDialog";
+import SessionView, { DecisionCard } from "./SessionView";
+import Settings from "./Settings";
+import Sidebar from "./Sidebar";
+import { useWorkbench } from "./store";
+import { Avatar, Button, EmptyState, I, Spinner, fmtTime, useToast } from "./ui";
 
-const STATUS_COLUMNS = [
-  { key: "working", label: "工作中" },
-  { key: "needs_input", label: "需要输入" },
-  { key: "in_review", label: "待审查" },
-  { key: "ready_to_merge", label: "准备合并" },
-];
+const TERMINAL = ["succeeded", "failed", "cancelled", "interrupted", "exhausted"];
 
-const SCOPE_STYLE = {
-  worktree: "bg-emerald-900 text-emerald-200 border-emerald-700",
-  person: "bg-amber-900 text-amber-200 border-amber-700",
-  team: "bg-rose-900 text-rose-200 border-rose-700",
-};
-
-function ScopeBadge({ scope }) {
-  return (
-    <span className={`text-xs px-2 py-0.5 rounded border ${SCOPE_STYLE[scope] || "bg-gray-800 text-gray-300 border-gray-700"}`}>
-      {scope}
-    </span>
-  );
-}
-
-function AgentCard({ agent }) {
-  return (
-    <div className="bg-gray-900 border border-gray-800 rounded-lg p-3 mb-2 text-sm">
-      <div className="font-mono text-gray-100">{agent.agent_id}</div>
-      <div className="text-gray-400 text-xs mt-1">owner: {agent.owner_id} · worktree: {agent.worktree_id}</div>
-      {agent.current_task && <div className="text-gray-300 text-xs mt-1">{agent.current_task}</div>}
-    </div>
-  );
-}
-
-function EscalationCard({ esc, onDecide }) {
-  const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  async function act(decision) {
-    setBusy(true);
-    try {
-      await decide(esc.id, decision, reason, "human");
-      onDecide(esc.id);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="bg-gray-900 border border-rose-800 rounded-lg p-4 mb-3">
-      <div className="flex items-center justify-between mb-2">
-        <ScopeBadge scope={esc.scope} />
-        <span className="text-xs text-gray-500">{esc.created_at}</span>
-      </div>
-      <div className="font-mono text-sm text-gray-100 mb-1">{esc.path}</div>
-      <div className="text-sm text-gray-300 mb-1">{esc.description}</div>
-      <div className="text-xs text-rose-300 mb-3">{esc.risk_summary}</div>
-      <input
-        className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-sm mb-2 text-gray-100"
-        placeholder="裁决理由（可选）"
-        value={reason}
-        onChange={(e) => setReason(e.target.value)}
-      />
-      <div className="flex gap-2">
-        <button
-          disabled={busy}
-          onClick={() => act("approve")}
-          className="flex-1 bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white text-sm rounded px-3 py-1.5"
-        >
-          通过
-        </button>
-        <button
-          disabled={busy}
-          onClick={() => act("reject")}
-          className="flex-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white text-sm rounded px-3 py-1.5"
-        >
-          退回
-        </button>
-      </div>
-    </div>
-  );
-}
-
+// AO's shell: a sidebar and one centre view (home / board / session / chat),
+// dialogs and drawers on top. State the URL can carry (?p= ?s= ?c= ?area=)
+// keeps working so links pasted into a chat still land on the right thing.
 export default function App() {
-  const [agents, setAgents] = useState([]);
-  const [escalations, setEscalations] = useState([]);
-  const [previews, setPreviews] = useState([]);
-  const [connected, setConnected] = useState(false);
-
-  async function refresh() {
-    const [a, e, p] = await Promise.all([fetchAgents(), fetchEscalations(), fetchPreviews()]);
-    setAgents(a);
-    setEscalations(e);
-    setPreviews(p);
-  }
+  const wb = useWorkbench();
+  const [authInfo, setAuthInfo] = useState(null);
+  const [view, setView] = useState(() => {
+    const q = new URLSearchParams(location.search);
+    const area = q.get("area");
+    if (q.get("s")) return "session";
+    if (area === "chat" || q.get("c")) return "chat";
+    if (q.get("p") || area === "work") return "board";
+    return "home";
+  });
+  const [chatId, setChatId] = useState(() => new URLSearchParams(location.search).get("c"));
+  const [settingsTab, setSettingsTab] = useState(null);
+  const [projectDialog, setProjectDialog] = useState(null);
+  const [showNewTask, setShowNewTask] = useState(false);
+  const [showRoom, setShowRoom] = useState(false);
+  const [showInbox, setShowInbox] = useState(false);
+  const [session, setSession] = useState(null);
+  const [toastNode, toast] = useToast();
+  const [profileData, setProfileData] = useState({ profiles: [], default_profile_id: null, default_model: null });
 
   useEffect(() => {
-    refresh();
-    const close = connectWebSocket((msg) => {
-      setConnected(true);
-      if (msg.type === "snapshot") {
-        setAgents(msg.data.agents || []);
-        setEscalations(msg.data.escalations || []);
-      } else if (msg.type === "agent_status") {
-        setAgents((prev) => {
-          const rest = prev.filter((a) => a.agent_id !== msg.data.agent_id);
-          return [...rest, msg.data];
-        });
-      } else if (msg.type === "escalation") {
-        setEscalations((prev) => [...prev, msg.data]);
-      } else if (msg.type === "decision") {
-        setEscalations((prev) => prev.filter((e) => e.id !== msg.data.escalation_id));
-      } else if (msg.type === "preview") {
-        setPreviews((prev) => [...prev, msg.data]);
-      }
-    });
-    return close;
+    if (wb.authState === "anon") api.authState().then(setAuthInfo).catch(() => setAuthInfo({}));
+  }, [wb.authState]);
+  useEffect(() => {
+    const area = new URLSearchParams(location.search).get("area");
+    if (area === "settings") setSettingsTab("general");
   }, []);
+  useEffect(() => { if (wb.authState === "ok") api.profiles().then(setProfileData).catch(() => {}); }, [settingsTab, showNewTask, wb.authState]);
+  useEffect(() => {
+    if (!wb.sessionId) { setSession(null); return; }
+    api.session(wb.sessionId).then(setSession).catch(() => setSession(null));
+  }, [wb.sessionId, wb.tasks, wb.sessions]);
+  useEffect(() => {
+    const q = new URLSearchParams();
+    if (view === "chat") { q.set("area", "chat"); if (chatId) q.set("c", chatId); }
+    if ((view === "board" || view === "session") && wb.projectId) q.set("p", wb.projectId);
+    if (view === "session" && wb.sessionId) q.set("s", wb.sessionId);
+    const s = q.toString();
+    history.replaceState(null, "", location.pathname + (s ? `?${s}` : ""));
+  }, [view, wb.projectId, wb.sessionId, chatId]);
 
-  function removeEscalation(id) {
-    setEscalations((prev) => prev.filter((e) => e.id !== id));
+  const mainSession = wb.sessions.find((s) => s.kind === "main");
+  const task = wb.tasks.find((t) => t.session_id === wb.sessionId) || null;
+  const taskFull = task ? { ...task, workspace: session?.workspace } : null;
+  const mainLive = wb.sessions.some((s) => s.kind === "main" && s.last_run_status && !TERMINAL.includes(s.last_run_status)) || wb.tasks.some((t) => t.status === "running");
+
+  const openProject = useCallback((pid) => {
+    if (pid !== wb.projectId) { wb.setSessionId(null); wb.setProjectId(pid); }
+    setView("board");
+  }, [wb]);
+  const openSession = useCallback((sid) => {
+    if (sid === "main") {
+      if (mainSession) wb.setSessionId(mainSession.id);
+      else api.mainSession(wb.projectId).then((s) => { wb.setSessionId(s.id); wb.refetch("sessions"); }).catch(() => {});
+    } else wb.setSessionId(sid);
+    setView("session");
+  }, [wb, mainSession]);
+  // the one thing a locked card can do: ask the owner in (ADR 0004 §2)
+  const requestJoin = useCallback(async (t) => {
+    try {
+      const r = await api.requestJoin(t.session_id);
+      toast(r.already_member ? "你已经在这个会话里了" : r.already_sent ? "已经申请过了，等 owner 处理" : "已经告诉 owner 了");
+      if (r.already_member) wb.refetch("tasks");
+    } catch (e) { toast(e.message, "red"); }
+  }, [wb, toast]);
+  const openTask = useCallback((t) => {
+    if (t.member === false) return;
+    if (t.project_id && t.project_id !== wb.projectId) { wb.setSessionId(null); wb.setProjectId(t.project_id); }
+    if (t.session_id) { wb.setSessionId(t.session_id); setView("session"); } else setView("board");
+  }, [wb]);
+  // where a notification points
+  const navigate = useCallback((link) => {
+    if (link.session_id) { if (link.project_id) wb.setProjectId(link.project_id); wb.setSessionId(link.session_id); setView("session"); return; }
+    if (link.conversation_id) { setChatId(link.conversation_id); setView("chat"); return; }
+    if (link.project_id) openProject(link.project_id);
+  }, [wb, openProject]);
+
+  if (wb.authState === "loading") {
+    return <div className="h-screen flex items-center justify-center text-[var(--muted)]"><Spinner /></div>;
+  }
+  if (wb.authState === "anon") {
+    return <Login authState={authInfo} onSignedIn={wb.signIn} />;
   }
 
+  const project = wb.projects.find((p) => p.id === wb.projectId);
+  const noTeam = (wb.me?.teams || []).length === 0;
+
   return (
-    <div className="h-screen bg-[#0f1115] text-gray-100 p-6 flex flex-col overflow-hidden">
-      <header className="flex items-center justify-between mb-4 shrink-0">
-        <div>
-          <h1 className="text-xl font-semibold">AgentRoom</h1>
-          <p className="text-sm text-gray-400">Multi-Agent 协作中的人工参与与治理 · 赛道三 Demo</p>
-        </div>
-        <span className={`text-xs px-2 py-1 rounded border ${connected ? "border-emerald-700 text-emerald-300" : "border-gray-700 text-gray-500"}`}>
-          {connected ? "● 已连接实时更新" : "○ 未连接（轮询中）"}
-        </span>
-      </header>
+    <div className="h-screen flex overflow-hidden bg-[var(--bg)] text-[var(--text)]">
+      <Sidebar wb={wb} view={view} onOpenProject={openProject} onOpenSession={openSession} onHome={() => setView("home")}
+        onAddProject={() => setProjectDialog("clone")} onOpenChat={() => setView("chat")} onOpenInbox={() => setShowInbox(true)}
+        onOpenSettings={(tab) => setSettingsTab(typeof tab === "string" ? tab : "general")} />
 
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-5 gap-6 min-h-0">
-        <section className="lg:col-span-3 min-h-0">
-          <ChatPanel />
+      <main className="flex-1 min-w-0 flex flex-col min-h-0 relative">
+        {wb.health && !wb.health.claude_binary && <div className="bg-red-50 text-red-700 text-[12px] px-4 py-1.5 border-b border-red-200">服务器上找不到 claude 可执行文件，运行会失败。</div>}
+
+        {view === "home" && (noTeam
+          ? <EmptyState className="h-full" icon={<I.users className="w-5 h-5" />} title="先建一个团队"
+              action={<Button kind="primary" onClick={() => setSettingsTab("team")}><I.plus />去创建</Button>}>
+              项目、模型配置和 agent 定义都属于团队。建一个，然后把人邀请进来。
+            </EmptyState>
+          : <Home projects={wb.projects} lastEvent={wb.lastEvent} onOpenProject={openProject} onOpenTask={openTask} onAddProject={setProjectDialog} onOpenChat={() => setView("chat")} />)}
+
+        {view === "chat" && <Chat wb={wb} convId={chatId} onConv={setChatId} onOpenSession={openSession} />}
+
+        {(view === "board" || view === "session") && !wb.projectId && (
+          <Home projects={wb.projects} lastEvent={wb.lastEvent} onOpenProject={openProject} onOpenTask={openTask} onAddProject={setProjectDialog} onOpenChat={() => setView("chat")} />
+        )}
+        {view === "board" && wb.projectId && (
+          <Board tasks={wb.tasks} room={wb.room} onOpen={openTask} onNewTask={() => setShowNewTask(true)} onOpenMain={() => openSession("main")}
+            mainLive={mainLive} onBell={() => setShowRoom(true)} project={project} onRequestJoin={requestJoin} />
+        )}
+        {view === "session" && wb.projectId && (
+          <SessionView session={session} task={taskFull} messages={wb.messages} streams={wb.streams} runStatus={wb.runStatus}
+            profileData={profileData} me={wb.me} agents={wb.agents} room={wb.room} artifacts={wb.artifacts} refetch={wb.refetch}
+            onCancel={(runId) => api.cancelRun(runId)} onRetry={(id) => api.retryTask(id)} onOpenSettings={() => setSettingsTab("models")}
+            onNewTask={() => setShowNewTask(true)} onOpenMain={() => openSession("main")} onBack={() => setView("board")} />
+        )}
+        {wb.wsStatus !== "connected" && <div className="absolute bottom-3 right-3 text-[11px] bg-amber-50 text-amber-700 border border-amber-200 rounded-full px-3 py-1 shadow-sm">事件流断开，重连中…（不会丢事件）</div>}
+      </main>
+
+      {showInbox && <Inbox wb={wb} onClose={() => setShowInbox(false)} onNavigate={navigate} />}
+      {showRoom && <RoomDrawer room={wb.room} tasks={wb.tasks} onClose={() => setShowRoom(false)} />}
+      {settingsTab && <Settings wb={wb} tab={settingsTab} setTab={setSettingsTab} onClose={() => setSettingsTab(null)} />}
+      {projectDialog && <ProjectDialog initialMode={projectDialog} teamId={wb.teamId} onClose={() => setProjectDialog(null)}
+        onCreated={(p) => { setProjectDialog(null); wb.refetch("projects"); openProject(p.id); }} />}
+      {showNewTask && wb.projectId && (
+        <NewTaskDialog projectId={wb.projectId} tasks={wb.tasks} profileData={profileData} agents={wb.agents} onClose={() => setShowNewTask(false)}
+          onCreated={(r) => { setShowNewTask(false); wb.refetch("tasks"); wb.refetch("sessions"); if (r?.session?.id) { wb.setSessionId(r.session.id); setView("session"); } }} />
+      )}
+      {toastNode}
+    </div>
+  );
+}
+
+// AO puts the orchestrator's attention items behind the bell; ours are the
+// Room's pending decisions, claims and overlaps.
+function RoomDrawer({ room, tasks, onClose }) {
+  const title = (runId) => tasks.find((x) => x.latest_run?.id === runId)?.title || room.members?.find((m) => m.run_id === runId)?.task_title || runId?.slice(-6);
+  const pending = room.pending_decisions || [];
+  return (
+    <div className="fixed inset-0 z-40 bg-black/20 animate-fade" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="absolute right-0 top-0 h-full w-[400px] max-w-[92vw] bg-white border-l border-[var(--border)] shadow-[var(--shadow-lg)] overflow-y-auto p-4 space-y-5 text-[12px] animate-rise">
+        <div className="row"><span className="font-semibold text-[14px]">Room</span><div className="flex-1" /><button className="btn btn-ghost btn-sm btn-icon" onClick={onClose} aria-label="关闭"><I.x /></button></div>
+        <section>
+          <div className="label mb-2" style={{ color: pending.length ? "var(--needs)" : undefined }}>待你裁决 · {pending.length}</div>
+          {pending.length === 0 && <div className="text-[var(--muted)]">没有。只有两个 worker 在同一工作区抢同一路径时才会出现，被挡住的 worker 会一直等你。</div>}
+          {pending.map((d) => <DecisionCard key={d.id} d={d} />)}
         </section>
-
-        <section className="lg:col-span-2 overflow-y-auto pr-1 space-y-6">
-          <div>
-            <h2 className="text-sm font-medium text-gray-400 mb-3">Agent 状态</h2>
-            <div className="grid grid-cols-2 gap-3">
-              {STATUS_COLUMNS.map((col) => (
-                <div key={col.key}>
-                  <div className="text-xs text-gray-500 mb-2">{col.label}</div>
-                  {agents.filter((a) => a.status === col.key).map((a) => (
-                    <AgentCard key={a.agent_id} agent={a} />
-                  ))}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <h2 className="text-sm font-medium text-gray-400 mb-3">
-              待人工裁决队列 {escalations.length > 0 && <span className="text-rose-400">({escalations.length})</span>}
-            </h2>
-            {escalations.length === 0 && (
-              <div className="text-sm text-gray-600 border border-dashed border-gray-800 rounded-lg p-6 text-center">
-                暂无待裁决事项
-              </div>
-            )}
-            {escalations.map((esc) => (
-              <EscalationCard key={esc.id} esc={esc} onDecide={removeEscalation} />
-            ))}
-          </div>
-
-          <div>
-            <h2 className="text-sm font-medium text-gray-400 mb-3">成果预览</h2>
-            <PreviewPanel previews={previews} />
-          </div>
+        <section>
+          <div className="label mb-2">认领 · {room.claims?.length || 0}</div>
+          {(room.claims || []).map((c) => <div key={c.id} className="row truncate"><span className="text-[var(--muted)] shrink-0">{title(c.run_id)}</span><span>→</span><span className="mono truncate">{c.path}</span></div>)}
+          {(room.claims || []).length === 0 && <div className="text-[var(--muted)]">没有 worker 认领着文件。</div>}
+          {(room.overlaps || []).map((o, i) => <div key={i} className={o.same_workspace ? "text-red-600" : "text-amber-600"}><span className="mono">{o.a.path}</span> ↔ <span className="mono">{o.b.path}</span> {o.same_workspace ? "同一工作区（冲突）" : "各自 worktree（合并时会冲突）"}</div>)}
+        </section>
+        <section>
+          <div className="label mb-2">广播 / 交接</div>
+          {(room.messages || []).slice(0, 20).map((m) => <div key={m.id} className="truncate"><span className="text-[var(--faint)] mono">{fmtTime(m.created_at)}</span> <span className="text-[var(--muted)]">[{m.kind}]</span> {m.payload.text || m.payload.note || m.payload.path || ""}</div>)}
+          {(room.messages || []).length === 0 && <div className="text-[var(--muted)]">还没有。</div>}
         </section>
       </div>
     </div>

@@ -1,0 +1,49 @@
+diff --git a/frontend/src/renderer/lib/api-client.ts b/frontend/src/renderer/lib/api-client.ts
+index 1f63079..ee76880 100644
+--- a/frontend/src/renderer/lib/api-client.ts
++++ b/frontend/src/renderer/lib/api-client.ts
+@@ -9,7 +9,9 @@ function devApiBaseUrl(): string {
+ 	return typeof window === "undefined" ? "http://127.0.0.1:3001" : window.location.origin;
+ }
+ 
+-const explicitApiBaseUrl = import.meta.env.VITE_AO_API_BASE_URL;
++// "same-origin": the renderer is served by a reverse proxy that also fronts the
++// daemon (/api, /mux), so REST/SSE/WS all use relative URLs.
++const explicitApiBaseUrl = import.meta.env.VITE_AO_API_BASE_URL === "same-origin" ? "" : import.meta.env.VITE_AO_API_BASE_URL;
+ const initialApiBaseUrl = explicitApiBaseUrl ?? (import.meta.env.DEV ? devApiBaseUrl() : "http://127.0.0.1:3001");
+ 
+ let runtimeApiBaseUrl: string | null = explicitApiBaseUrl ?? null;
+diff --git a/frontend/src/renderer/lib/bridge.ts b/frontend/src/renderer/lib/bridge.ts
+index 1be2106..f1a3e8a 100644
+--- a/frontend/src/renderer/lib/bridge.ts
++++ b/frontend/src/renderer/lib/bridge.ts
+@@ -57,10 +57,13 @@ export const aoBridge: AoBridge =
+ 			readText: async () => (navigator.clipboard?.readText ? navigator.clipboard.readText() : ""),
+ 		},
+ 		daemon: {
+-			getStatus: async () => ({
+-				state: "stopped",
+-				message: "Electron preload is not available in browser preview.",
+-			}),
++			getStatus: async () =>
++				import.meta.env.VITE_AO_API_BASE_URL === "same-origin"
++					? { state: "ready", port: 3001 }
++					: {
++							state: "stopped",
++							message: "Electron preload is not available in browser preview.",
++						},
+ 			start: async () => ({ state: "starting" }),
+ 			stop: async () => ({ state: "stopped" }),
+ 			restart: async () => ({ state: "starting" }),
+diff --git a/frontend/src/renderer/lib/daemon-status.ts b/frontend/src/renderer/lib/daemon-status.ts
+index fb980ff..15dce5c 100644
+--- a/frontend/src/renderer/lib/daemon-status.ts
++++ b/frontend/src/renderer/lib/daemon-status.ts
+@@ -5,6 +5,7 @@ export type DaemonStatus = Awaited<ReturnType<typeof aoBridge.daemon.getStatus>>
+ 
+ export function applyDaemonStatus(nextStatus: DaemonStatus): void {
+ 	setApiDaemonStatus(nextStatus);
++	if (import.meta.env.VITE_AO_API_BASE_URL === "same-origin") return;
+ 	if (nextStatus.state === "ready" && nextStatus.port) {
+ 		setApiBaseUrl(`http://127.0.0.1:${nextStatus.port}`);
+ 	} else {

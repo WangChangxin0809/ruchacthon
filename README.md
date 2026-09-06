@@ -1,132 +1,126 @@
-# AgentRoom
+# Cloud Workbench
 
-When several Claude Code agents edit the same repository at once, the collision
-that matters is not the character-level kind (CRDTs already solve that) -- it
-is two *teammates'* agents both deciding to own the same file, which nobody
-should let a machine settle unilaterally. AgentRoom auto-merges the first kind
-and escalates the second to a human, then blocks the merge until that human
-has actually decided.
+[![CI](https://github.com/WangChangxin0809/ruchacthon/actions/workflows/ci.yml/badge.svg)](https://github.com/WangChangxin0809/ruchacthon/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-- **Covers**: what this is, how to run it, and where to go next.
-- **Does not cover**: how to work *on* it (CONTRIBUTING.md), how the pieces fit
-  (ARCHITECTURE.md), how to perform a task (docs/how-to/).
+部署在你自己服务器上的多 agent 开发工作台：一个团队在浏览器里派活、审阅、合并，
+每个 agent 是服务器上一个独立的 Claude Code 进程，跑在自己的 git worktree 分支上。
 
-## 用 Docker 跑（最省事，装了 Docker 就一条命令）
+![四列看板：进行中、需要你、审阅中、可合并；每张卡是一个后台 worker，带分支、状态和花费](.github/assets/board.png)
 
-```bash
-docker compose up --build
-```
+## 它解决什么
 
-打开 `http://localhost:5173` 就行，前后端都在容器里，不用自己装 Python/Node 依赖。
-想接真实模型，起之前先 `export LLM_PROVIDER=... LLM_API_KEY=...`（跟下面「接真实模型」
-那节一样的变量，`docker compose up` 会自动带进容器）。停止用 `Ctrl+C`，再
-`docker compose down` 清理。Agent 用 `write_file` 改的文件会直接出现在你本地这份代码
-里（`git status` 能看到），不是关起来改了看不见。
+派活是简单的部分。难的是三种交流同时发生——人跟人、agent 跟 agent、人跟 agent——
+而大多数工具只做了第一种或第三种。
 
-没有 Docker，或者想更细地控制两个服务，往下看手动跑的方式。
+开五个终端跑五个 agent，你会立刻失去三样东西：不知道谁正在改哪个文件；看不到它究竟
+交出了什么，只能翻滚屏；想让它改一处，只能把上下文重新描述一遍。把它们接进同一个群，
+又会撞上第二组问题：谁该听见谁说话？一个 agent 能不能读别人的会话？两个 agent 要改
+同一个文件，谈不拢谁拍板？
 
-## 5 分钟跑起来（不用 Docker，手动跑，照抄命令就行）
+工作台把这三条通路做成同一套东西——同一份成员关系、同一条带序号的事件日志、同一个
+收件箱——并且对上面每个问题都给出确定的答案，而不是交给模型自己商量：
 
-需要两个终端窗口——一个跑后端，一个跑前端，两个都要一直开着。
+| 通路 | 在哪里 | 规则 |
+|---|---|---|
+| 人 ↔ 人 | 消息区（私聊 / 群聊 / 会话成员） | 默认没有模型在听，`@` 点名才叫得动 agent |
+| agent ↔ agent | Room（认领、广播、交接、点名） | 能找谁跟着派它的人走，越界返回 `refused:` 并说明原因 |
+| 人 ↔ agent | 会话 + 检查器 | agent 主动提问和交成果，反馈回流到同一个会话 |
 
-**终端 1 —— 后端**：
+三条通路在冲突上汇合：同一个工作区抢同一个路径，**不自动裁决**，升级成一条待你决定的
+记录，请求方就地阻塞直到你点。这条是架构不变量第 1 条，CI 里有一个 gate 盯着它。
 
-```bash
-python3 -m pip install --user --break-system-packages -r backend/requirements.txt
-python3 -m uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8787
-```
+## 架构
 
-看到 `Uvicorn running on http://0.0.0.0:8787` 就是起来了，这个终端别关，一直挂着。
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/generated/architecture-dark.png">
+  <img alt="团队的浏览器 → React 前端 → FastAPI 后端 → cc_runner → 每个 run 一个 Claude Code 子进程，各自一个 git worktree；旁边是 Room、成果与预览、人工裁决，以及走回环转换代理的模型服务商" src="docs/generated/architecture-light.png">
+</picture>
 
-**终端 2 —— 前端**：
+一条竖线是一个 run 的隔离边界：`cc_runner` 是唯一起模型的地方，每个 run 拿到自己的
+worktree、自己的会话、自己的凭据快照。带三个演示视角的交互版在
+[`docs/generated/architecture.html`](docs/generated/architecture.html)（用浏览器打开，
+不用起服务），图的源是 [`architecture.archify.json`](docs/reference/architecture-diagram.md)。
 
-```bash
-cd frontend
-npm install
-npm run dev -- --host 0.0.0.0 --port 5173
-```
+## 快速开始
 
-看到 `Local: http://localhost:5173/` 就是起来了，同样别关。
+### 部署给团队用（一个进程，一个端口）
 
-**然后打开浏览器**：访问 `http://localhost:5173` ，就能看到看板了。页面上有三块：
-
-- **左边「对话」**：可以给主 Agent 发消息，它能自己改文件、也能派子代理去干活。**没配模型 key 之前这块用不了**，会有黄色提示条，看下面「接真实模型」怎么配。
-- **右上「Agent 状态」**：看板，四栏——工作中 / 需要输入 / 待审查 / 准备合并。
-- **右下「待人工裁决队列」+「成果预览」**：Agent 之间抢同一个文件时，冲突会出现在这里，需要你手动点"通过"或"退回"；Agent 做完事想给你看的东西会出现在"成果预览"里。
-
-**想看一次"两个 Agent 抢文件"的效果**（不需要模型 key，跑的是脚本模拟）：
+后端同时提供 API 和构建好的前端。
 
 ```bash
-python3 scripts/demo/run_two_agents.py
+python3 -m pip install -r backend/requirements.txt
+cd frontend && npm install && npm run build && cd ..
+WORKBENCH_TOKEN=<自己想一个> python3 -m uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8787
 ```
 
-跑完刷新一下看板，"待人工裁决队列"里会多一条冲突，点"通过"之后跑一下：
+浏览 `http://<你的服务器>:8787/?token=<WORKBENCH_TOKEN>`。**第一个账号需要这个令牌**——
+机器一重启就可达，没有这道门，第一个找到端口的陌生人就会成为管理员。第一个注册的人
+成为管理员并拥有「默认团队」，其他人通过 ⚙ → 团队 里的邀请链接加入。
+
+服务还需要一次 Claude Code 登录才能真正跑 agent：在服务器上把 `CLAUDE_CODE_OAUTH_TOKEN`
+写进环境，或者以同一个用户跑一次 `claude` 交互登录。成套的部署脚本、systemd 单元和
+数据库迁移演练在 [docs/how-to/deploy-aliyun.md](docs/how-to/deploy-aliyun.md)。
+
+### 本机跑一个（单人，改代码时用）
+
+两个终端，都一直开着。
 
 ```bash
-python3 scripts/gates/check_escalation_decisions.py
+WORKBENCH_SINGLE_USER=1 python3 -m uvicorn app.main:app --app-dir backend --host 127.0.0.1 --port 8787
 ```
-
-裁决前这条命令会失败（exit 1），裁决后会成功（exit 0）——这就是"人不点头，代码合并不进去"这条规则本身。
-
-### 接真实模型（让左边的对话框真的能用）
-
-拿到任意一家的 API key（DeepSeek、Claude、GPT 都行），在**终端 1**（后端那个）里，**先按 `Ctrl+C` 停掉后端，再**这样重新起：
 
 ```bash
-export LLM_PROVIDER=openai          # DeepSeek/GPT 用 openai；Claude 用 anthropic
-export LLM_API_KEY=你的key
-export LLM_MODEL=deepseek-chat      # 可选，不填有默认值
-python3 -m uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8787
+cd frontend && npm install && npm run dev -- --host 127.0.0.1 --port 5173
 ```
 
-如果你机器上已经给别的工具设过 `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY` / `OPENAI_API_KEY`，不用重复设 `LLM_API_KEY`，会自动用那个。**这里读不到 Claude Code 自己登录时用的那个凭证**——那是 Claude Code 专用的，没法也不该拿来给别的程序用，必须是一个独立的 API key。
+`WORKBENCH_SINGLE_USER=1` 用一个叫 `local` 的管理员账号，不用注册登录；这个数据目录
+以后改成多人模式时，第一个注册的人接管它。打开 `http://localhost:5173`。
 
-配好重启后端、刷新页面，左边对话框顶部的黄色提示条会消失，就能正常聊天了。
+## 环境要求
 
-### 常见问题
+| | |
+|---|---|
+| Claude Code | 已安装并登录（`claude --version` 能跑，`claude -p "hi"` 能回答）。工作台不读取、不复制你的登录凭证，只是启动 `claude` 子进程 |
+| Python | 3.11+ |
+| Node | 20+ |
+| git | 任意近期版本；worker 用 worktree，所以项目得是个 git 仓库 |
 
-- **8787 或 5173 端口被占用**：说明上次启动的进程还在跑，找到它关掉再重开：`lsof -ti:8787 | xargs kill`（或把 8787 换成 5173）。
-- **`pip install` 报错、装不上依赖**：如果是因为连不上 apt/Debian 的源，见 [backend/README.md](backend/README.md) 里绕开 apt 直接装的办法。
-- **前端 `npm install` 卡住或报错**：需要 Node 20+；如果 `npm run build` 时报 rolldown 相关的原生模块找不到，见 [frontend/README.md](frontend/README.md)。
-- **看板打不开、显示空白**：先确认终端 1 和终端 2 都还在跑（没报错退出），再检查浏览器地址是不是 `http://localhost:5173`（不是 8787，8787 是后端接口，不是给人看的页面）。
-- **`docker compose up` 报端口冲突**：说明本机已经用手动方式起过一份（还在跑的 `uvicorn`/`npm run dev`），两种方式二选一，先停掉其中一个。
+`WORKBENCH_MODEL` 换默认模型（省钱可设 `claude-sonnet-5`），
+`WORKBENCH_MAX_CONCURRENT_RUNS` 改并发上限（默认 3），
+`WORKBENCH_DATA_DIR` 改数据位置（默认 `backend/data/`）。
 
-## Quick start (English, condensed)
+## 你会做的三件事
 
-```bash
-# backend
-python3 -m pip install --user --break-system-packages -r backend/requirements.txt
-python3 -m uvicorn app.main:app --app-dir backend --host 0.0.0.0 --port 8787 &
+1. **派活**。进项目看板，右上「主 agent」说一句话，它自己干或者用 `spawn_worker` 派
+   worker；「＋ 任务」直接开一个 worker，选 agent 定义、模型、隔离方式和依赖。
+2. **审阅**。点开一张卡，右侧检查器三页：摘要（审阅通过 / 要求修改 / 合并）、预览
+   （worker 自己指定要你看的东西，可以在下面写反馈）、文件（这个分支相对主分支的 diff）。
+   「审阅通过」≠ 合并，合并是单独一步。
+3. **裁决**。两个 worker 在同一个工作区抢同一个路径时，看板「需要你」列和 Room 抽屉里
+   会出现一张裁决卡，被挡住的 worker 一直等你点。
 
-# frontend
-cd frontend && npm install && npm run dev -- --host 0.0.0.0 --port 5173 &
+自带 API key：⚙ → 模型，88 家供应商预设加一个本地转换代理。密钥只写不读，按运行注入
+进程环境，不改写你全局的 Claude Code 配置。细节在 [docs/how-to/providers.md](docs/how-to/providers.md)。
 
-# demo: two agents racing to claim the same file
-python3 scripts/demo/run_two_agents.py
-```
+## 怎么拼在一起
 
-If it worked: the dashboard at `http://localhost:5173` shows both agents,
-one pending escalation for the file they both claimed, and
-`python3 scripts/gates/check_escalation_decisions.py` exits 1 until you
-click "通过" in the dashboard, after which it exits 0.
+一个 SQLite 文件 + 一条带序号的事件日志，所以浏览器断线用 `since=<seq>` 重连不丢不重，
+服务器重启后会如实报告哪些 run 已经死了。领域模型、代码地图和七条不变量在
+[ARCHITECTURE.md](ARCHITECTURE.md)；为什么这么选在 [docs/decisions/](docs/decisions/)；
+其余按 [docs/index.md](docs/index.md) 路由。这些文档是英文的。
 
-## Requirements
+真实 Claude Code 的验收记录——改文件、并行 worker、取消、重启恢复、断线重连、反馈回流、
+Room 裁决、自带 key 跑通一个回合——连同**尚未验证的场景清单**，在
+[docs/reference/acceptance-2026-09-05.md](docs/reference/acceptance-2026-09-05.md) 和
+[acceptance-2026-09-06.md](docs/reference/acceptance-2026-09-06.md)。
 
-- Python 3.11+, Node 20+
+## 参与
 
-## Documentation
+看 [CONTRIBUTING.md](CONTRIBUTING.md)。安全问题走 [SECURITY.md](SECURITY.md)，不要开 issue。
 
-- Bird's eye view and invariants: [ARCHITECTURE.md](ARCHITECTURE.md)
-- Everything else, routed: [docs/index.md](docs/index.md)
-- Backend details (incl. chat/subagents/file tools/LLM key setup): [backend/README.md](backend/README.md)
-- Frontend details: [frontend/README.md](frontend/README.md)
+## 许可
 
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md). Security issues go to
-[SECURITY.md](SECURITY.md), not the issue tracker.
-
-## License
-
-Unlicensed for now — a hackathon submission under Fresh Build rules; see
-[SECURITY.md](SECURITY.md) for the placeholder note on this.
+[MIT](LICENSE)。上游项目（Agent Orchestrator、DeepSeek Harness、AgentRoom、CC Switch）
+的借鉴与署名移植记录在 [docs/decisions/](docs/decisions/) 和
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

@@ -1,0 +1,16 @@
+[Unit]
+Description=Agent Orchestrator daemon (comparison copy)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Environment=HOME=/root
+Environment=PATH=/root/.local/bin:/usr/local/bin:/usr/bin:/bin
+EnvironmentFile=/etc/ao-compare.env
+ExecStart=/opt/ao-compare/ao daemon
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

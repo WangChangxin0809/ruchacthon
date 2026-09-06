@@ -1,9 +1,8 @@
 fastapi
 uvicorn[standard]
+claude-agent-sdk>=0.2.152
 pycrdt
-mcp
 websockets
 python-multipart
-anthropic
-openai
 httpx
+psutil
