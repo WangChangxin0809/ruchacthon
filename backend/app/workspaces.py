@@ -21,6 +21,20 @@ def _git(args: list[str], cwd: str | Path) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True, text=True, timeout=120)
 
 
+def commit_identity(cwd: str | Path) -> list[str]:
+    """`git -c` flags that give a commit an author when the machine has none.
+
+    A freshly provisioned server has no `user.email`, and git then refuses to
+    commit -- so merging a finished task fails at the one step the human just
+    pressed a button for, with git's "Please tell me who you are". Returns an
+    empty list where an identity is configured, so a real one always wins; the
+    fallback matches the one main.py stamps on a project's initial commit.
+    """
+    if _git(["config", "user.email"], cwd).returncode == 0:
+        return []
+    return ["-c", "user.name=workbench", "-c", "user.email=workbench@local"]
+
+
 def is_git_repo(path: str | Path) -> bool:
     r = _git(["rev-parse", "--is-inside-work-tree"], path)
     return r.returncode == 0 and r.stdout.strip() == "true"
@@ -92,10 +106,13 @@ class WorkspaceManager:
         if not self.merge_available(ws):
             return {"ok": False, "error": "no merge capability for this workspace (not a git worktree)"}
         _git(["add", "-A"], ws["path"])
-        c = _git(["commit", "-q", "-m", f"Workbench task: {ws['branch']}", "--allow-empty"], ws["path"])
+        ident = commit_identity(ws["path"])
+        c = _git([*ident, "commit", "-q", "-m", f"Workbench task: {ws['branch']}", "--allow-empty"], ws["path"])
         if c.returncode != 0 and "nothing to commit" not in c.stdout + c.stderr:
             return {"ok": False, "error": f"commit in worktree failed: {(c.stderr or c.stdout).strip()}"}
-        r = _git(["merge", "--no-ff", "-m", message, ws["branch"]], project["root_path"])
+        # --no-ff always writes a merge commit, so it needs an author too
+        r = _git([*commit_identity(project["root_path"]), "merge", "--no-ff", "-m", message, ws["branch"]],
+                 project["root_path"])
         if r.returncode != 0:
             _git(["merge", "--abort"], project["root_path"])
             return {"ok": False, "error": f"merge conflict, aborted: {(r.stdout + r.stderr).strip()[:2000]}"}
