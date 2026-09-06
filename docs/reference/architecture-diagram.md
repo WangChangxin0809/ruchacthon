@@ -48,3 +48,22 @@ accurate but reads as the wrong thing. Look at the render before committing it.
 Component boxes carry no code anchors yet. archify only links a box to a line
 of code when `meta.repository` names a public commit, and this branch is not
 pushed.
+
+## The two PNGs next to it
+
+`docs/generated/architecture-light.png` and `architecture-dark.png` are what the
+README embeds, because GitHub renders Markdown, not an interactive page. Each is
+a headless-Chrome screenshot of `architecture.html` in that theme, cropped to the
+canvas — no page title, no toolbar, no legend strip — then scaled to 1600 px wide:
+
+```bash
+google-chrome --headless=new --hide-scrollbars --force-device-scale-factor=2 \
+  --window-size=1500,950 --virtual-time-budget=9000 \
+  --screenshot=arch.png 'file://<repo>/docs/generated/architecture.html?theme=light'   # docs-runnable: ignore
+```
+
+Crop box on that 3000×1900 render: `(530, 355, 2470, 1464)`. Unlike the HTML they
+are not byte-deterministic — a different Chrome redraws them — so regenerate them
+only when the diagram itself changed, and look at the result. The page title is
+cropped out on purpose: it still says the pre-rename product name, and the source
+of that string is the archify spec, not the picture.
