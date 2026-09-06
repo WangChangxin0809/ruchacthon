@@ -1,0 +1,363 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "CC Workbench 架构",
+    "subtitle": "本地多 agent 工作台：唯一引擎是 Claude Code",
+    "locale": "zh-CN",
+    "output": "architecture.html",
+    "visual_preset": "blueprint",
+    "animation": "trace",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "one-task",
+        "label": "一个任务怎么跑完",
+        "focus": [
+          "ui",
+          "api",
+          "runner",
+          "cc",
+          "worktree"
+        ],
+        "note": "从看板上新建任务，到一个 Claude Code 进程在自己的分支上干活。"
+      },
+      {
+        "id": "conflict",
+        "label": "抢同一个文件时",
+        "focus": [
+          "cc",
+          "room",
+          "human",
+          "worktree"
+        ],
+        "note": "同一工作区的认领冲突升级成待人裁决，worker 就地阻塞，不自动让路。"
+      },
+      {
+        "id": "byok",
+        "label": "自带模型",
+        "focus": [
+          "runner",
+          "cc",
+          "proxy",
+          "vendor"
+        ],
+        "note": "Claude Code 指向回环代理，协议在本机转换，密钥不进子进程。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "people",
+      "type": "external",
+      "label": "团队",
+      "sublabel": "浏览器里的几个人",
+      "pos": [
+        40,
+        320
+      ],
+      "size": [
+        120,
+        62
+      ]
+    },
+    {
+      "id": "ui",
+      "type": "frontend",
+      "label": "React 前端",
+      "sublabel": "看板 / 会话 / 预览",
+      "tag": "frontend",
+      "pos": [
+        230,
+        320
+      ],
+      "size": [
+        140,
+        62
+      ]
+    },
+    {
+      "id": "api",
+      "type": "backend",
+      "label": "FastAPI 后端",
+      "sublabel": "REST 与事件回放",
+      "tag": "backend/app",
+      "pos": [
+        460,
+        320
+      ],
+      "size": [
+        150,
+        62
+      ]
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "SQLite 单文件",
+      "sublabel": "任务 / 运行 / 消息 / 事件",
+      "tag": "WAL",
+      "pos": [
+        460,
+        560
+      ],
+      "size": [
+        150,
+        62
+      ]
+    },
+    {
+      "id": "runner",
+      "type": "security",
+      "label": "cc_runner",
+      "sublabel": "唯一的模型出口",
+      "tag": "硬规则 2",
+      "pos": [
+        700,
+        320
+      ],
+      "size": [
+        140,
+        62
+      ]
+    },
+    {
+      "id": "preview",
+      "type": "cloud",
+      "label": "成果与预览",
+      "sublabel": "agent 自己选给你看什么",
+      "tag": "preview",
+      "pos": [
+        700,
+        100
+      ],
+      "size": [
+        140,
+        62
+      ]
+    },
+    {
+      "id": "cc",
+      "type": "backend",
+      "label": "Claude Code 进程",
+      "sublabel": "一个 run 一个子进程",
+      "tag": "worker / 主控",
+      "pos": [
+        940,
+        320
+      ],
+      "size": [
+        150,
+        62
+      ]
+    },
+    {
+      "id": "room",
+      "type": "messagebus",
+      "label": "Room",
+      "sublabel": "认领 / 广播 / 交接",
+      "tag": "跨 agent",
+      "pos": [
+        940,
+        100
+      ],
+      "size": [
+        150,
+        62
+      ]
+    },
+    {
+      "id": "worktree",
+      "type": "cloud",
+      "label": "git worktree",
+      "sublabel": "自己的分支，只写这里",
+      "tag": "隔离",
+      "pos": [
+        940,
+        560
+      ],
+      "size": [
+        150,
+        62
+      ]
+    },
+    {
+      "id": "human",
+      "type": "security",
+      "label": "人工裁决",
+      "sublabel": "worker 阻塞等你决定",
+      "tag": "硬规则 1",
+      "pos": [
+        1170,
+        100
+      ],
+      "size": [
+        150,
+        62
+      ]
+    },
+    {
+      "id": "proxy",
+      "type": "security",
+      "label": "回环转换代理",
+      "sublabel": "Anthropic ↔ 各家协议",
+      "tag": "仅 127.0.0.1",
+      "pos": [
+        1170,
+        320
+      ],
+      "size": [
+        150,
+        62
+      ]
+    },
+    {
+      "id": "vendor",
+      "type": "external",
+      "label": "模型服务商",
+      "sublabel": "Anthropic / NIM / 88 家预设",
+      "pos": [
+        1170,
+        730
+      ],
+      "size": [
+        155,
+        62
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "这一台机器（笔记本或自建服务器）",
+      "wraps": [
+        "ui",
+        "api",
+        "db",
+        "runner",
+        "preview",
+        "cc",
+        "room",
+        "worktree",
+        "human",
+        "proxy"
+      ],
+      "pad": 24
+    },
+    {
+      "kind": "security-group",
+      "label": "一个 run 的隔离边界",
+      "wraps": [
+        "cc",
+        "worktree"
+      ],
+      "pad": 14
+    }
+  ],
+  "connections": [
+    {
+      "from": "people",
+      "to": "ui",
+      "label": "浏览器",
+      "variant": "emphasis"
+    },
+    {
+      "from": "ui",
+      "to": "api",
+      "label": "REST / WS",
+      "variant": "emphasis"
+    },
+    {
+      "from": "api",
+      "to": "db",
+      "label": "唯一持久化",
+      "labelDy": 60
+    },
+    {
+      "from": "api",
+      "to": "runner",
+      "label": "起一个 run",
+      "variant": "emphasis"
+    },
+    {
+      "from": "runner",
+      "to": "preview",
+      "label": "preview 工具",
+      "variant": "dashed",
+      "labelDy": -60
+    },
+    {
+      "from": "runner",
+      "to": "cc",
+      "label": "起子进程",
+      "variant": "emphasis"
+    },
+    {
+      "from": "cc",
+      "to": "worktree",
+      "label": "只写这里",
+      "labelDy": 60
+    },
+    {
+      "from": "cc",
+      "to": "room",
+      "label": "认领路径",
+      "labelDy": -55
+    },
+    {
+      "from": "room",
+      "to": "human",
+      "label": "冲突升级",
+      "variant": "security",
+      "labelDy": -22
+    },
+    {
+      "from": "human",
+      "to": "room",
+      "variant": "dashed"
+    },
+    {
+      "from": "cc",
+      "to": "proxy",
+      "label": "回环出口",
+      "variant": "security"
+    },
+    {
+      "from": "proxy",
+      "to": "vendor",
+      "label": "转换转发",
+      "variant": "security",
+      "fromSide": "bottom",
+      "toSide": "top"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "三条硬规则",
+      "items": [
+        "同工作区抢同一路径 → 升级给人，worker 阻塞到有裁决为止",
+        "每一次模型调用都走 cc_runner，没有第二个客户端",
+        "密钥只按环境变量名引用，不进响应、日志、事件、数据库"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "工作逻辑",
+      "items": [
+        "主 agent 派活，worker 各自一个 worktree 后台跑",
+        "看板四列跟进：需要你 / 进行中 / 待审阅 / 待合并",
+        "审阅通过 ≠ 合并，合并是人单独按的一步"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "已经验证过的",
+      "items": [
+        "转换代理端到端：claude -p → 回环 → NVIDIA NIM，3.7 秒返回",
+        "schema 1→3 迁移先在生产库副本上彩排，再上线",
+        "会话可见性：非成员拿不到消息、成果与事件"
+      ]
+    }
+  ]
+}

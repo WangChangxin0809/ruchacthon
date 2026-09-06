@@ -63,6 +63,7 @@ rather than waiting for CI, because that is how often the cost is paid.
 | Know why the old hand-written model loop existed (historical) | [0002](decisions/0002-llm-client-abstraction.md) | — |
 | See what a real Claude Code run proved, and what is still unverified | [acceptance 2026-09-05](reference/acceptance-2026-09-05.md) | — |
 | See what round 4 (agent definitions, your own API key) actually proved | [acceptance 2026-09-06](reference/acceptance-2026-09-06.md) | — |
+| Show somebody the system in one picture | [architecture diagram](reference/architecture-diagram.md), rendered to [docs/generated/architecture.html](generated/architecture.html) | [architecture.archify.json](reference/architecture.archify.json) |
 | Add a worker tool or change what the main agent can do | [ARCHITECTURE.md](../ARCHITECTURE.md) codemap | `backend/app/runs.py` (`_main_tools` / `_room_tools`) |
 | Add a provider path | [ARCHITECTURE.md](../ARCHITECTURE.md) invariant 5 | `backend/app/providers.py` (`KINDS`, `env_for`) |
 | Reach the Aliyun server | [connect-to-aliyun-server](how-to/connect-to-aliyun-server.md) | — |
